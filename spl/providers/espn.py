@@ -274,7 +274,7 @@ def season_months(season: int) -> List[Tuple[int, int]]:
 
 
 def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
-                  log=print) -> Dataset:
+                  with_logos: bool = True, log=print) -> Dataset:
     now = datetime.now(timezone.utc)
     current = season_of(now)
     if seasons is None:
@@ -321,7 +321,9 @@ def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
             team = row.get("team") or {}
             if str(team.get("id", "")).isdigit():
                 ds.teams[int(team["id"])] = team.get("displayName") or str(team["id"])
-    except EspnError as exc:
+    except Exception as exc:
+        # the fixtures already name every club, so this step is a refinement:
+        # an unexpected failure here must not cost us the whole snapshot
         log("team list unavailable: %s" % exc)
 
     try:
@@ -331,5 +333,99 @@ def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
     except EspnError as exc:
         log("injuries unavailable: %s" % exc)
 
+    if with_logos:
+        # badges are cosmetic; never let them take the data fetch down with them
+        try:
+            ds.logos = fetch_logos(client, set(ds.teams), log=log)
+        except Exception as exc:                      # pragma: no cover
+            log("badges skipped: %s" % exc)
+
     log("upstream calls: %d (cache hits %d)" % (client.calls_made, client.cache_hits))
     return ds
+
+
+# -------------------------------------------------------------------- badges
+#: rendered at 54px, so 112 covers a 2x display exactly
+LOGO_PX = 112
+
+
+def _shrink_png(raw: bytes, px: int = LOGO_PX) -> bytes:
+    """Downscale with macOS `sips`. Returns the original if it is unavailable."""
+    import shutil
+    import subprocess
+    import tempfile
+    if not shutil.which("sips"):
+        return raw
+    with tempfile.TemporaryDirectory() as d:
+        src = Path(d) / "in.png"
+        dst = Path(d) / "out.png"
+        src.write_bytes(raw)
+        try:
+            subprocess.run(["sips", "-Z", str(px), str(src), "--out", str(dst)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=25, check=True)
+            return dst.read_bytes() if dst.exists() else raw
+        except (subprocess.SubprocessError, OSError):
+            return raw
+
+
+def fetch_logos(client: Espn, team_ids, log=print) -> Dict[int, str]:
+    """Club badges as data: URIs, so the built page stays a single file.
+
+    Cached on disk alongside the JSON, because these never change and each one
+    is a separate download.
+    """
+    import base64
+
+    cache_root = getattr(client, "cache_dir", None)
+    if cache_root is None:
+        return {}
+    cache = Path(cache_root) / "logos"
+    cache.mkdir(parents=True, exist_ok=True)
+    try:
+        payload = client.teams()
+    except EspnError as exc:
+        log("logos unavailable: %s" % exc)
+        return {}
+
+    blocks = (payload.get("sports") or [{}])[0].get("leagues") or [{}]
+    urls: Dict[int, str] = {}
+    for row in (blocks[0].get("teams") or []):
+        team = row.get("team") or {}
+        if not str(team.get("id", "")).isdigit():
+            continue
+        logos = team.get("logos") or []
+        url = team.get("logo") or (logos[0].get("href") if logos else None)
+        if url:
+            urls[int(team["id"])] = url
+
+    wanted = set(team_ids)
+    out: Dict[int, str] = {}
+    fetched = 0
+    for tid, url in sorted(urls.items()):
+        if tid not in wanted:
+            continue
+        fp = cache / ("%d.png" % tid)
+        if not fp.exists():
+            try:
+                resp = requests.get(url, timeout=client.timeout,
+                                    headers={"User-Agent": USER_AGENT})
+                resp.raise_for_status()
+                fp.write_bytes(_shrink_png(resp.content))
+                fetched += 1
+                time.sleep(0.15)
+            except requests.RequestException as exc:
+                log("  badge for %d failed: %s" % (tid, exc))
+                continue
+        try:
+            blob = fp.read_bytes()
+        except OSError:
+            continue
+        out[tid] = "data:image/png;base64," + base64.b64encode(blob).decode("ascii")
+
+    missing = sorted(wanted - set(out))
+    log("badges: %d embedded (%d newly downloaded)%s"
+        % (len(out), fetched,
+           ", %d club(s) have none and fall back to initials" % len(missing)
+           if missing else ""))
+    return out

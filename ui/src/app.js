@@ -168,8 +168,10 @@ function showFixtureStrip(activeKey){
       b.type = "button"; b.className = "chip";
       b.setAttribute("data-key", f.home + ">" + f.away);
       b.innerHTML = '<div class="d">' + f.label.replace(" UTC","") + "</div>"
-        + '<div class="t">' + BY_ID[f.home].name
-        + ' <i>v</i> ' + BY_ID[f.away].name + "</div>";
+        + '<div class="t">'
+        + crestTag(BY_ID[f.home], "mini") + BY_ID[f.home].name
+        + ' <i>v</i> '
+        + crestTag(BY_ID[f.away], "mini") + BY_ID[f.away].name + "</div>";
       b.addEventListener("click", function(){
         homesel.value = f.home; awaysel.value = f.away;
         clubsel.value = ""; render();
@@ -181,6 +183,31 @@ function showFixtureStrip(activeKey){
     el.setAttribute("aria-current",
       el.getAttribute("data-key") === activeKey ? "true" : "false");
   });
+}
+
+/* A club badge where one exists, initials where it does not. The <img> keeps
+   alt text so the club is still named if the image fails to decode. */
+function paintBadge(el, club){
+  if (club.logo){
+    el.classList.add("hasimg");
+    el.innerHTML = "";
+    var img = document.createElement("img");
+    img.src = club.logo;
+    img.alt = club.name + " badge";
+    img.addEventListener("error", function(){
+      el.classList.remove("hasimg");
+      el.textContent = initials(club.name);
+    });
+    el.appendChild(img);
+  } else {
+    el.classList.remove("hasimg");
+    el.textContent = initials(club.name);
+  }
+}
+
+function crestTag(club, cls){
+  if (!club || !club.logo) return "";
+  return '<img class="' + cls + '" src="' + club.logo + '" alt="">';
 }
 
 function initials(name){
@@ -350,8 +377,8 @@ function render(){
 
   $("homename").textContent = home.name;
   $("awayname").textContent = away.name;
-  $("hbadge").textContent = initials(home.name);
-  $("abadge").textContent = initials(away.name);
+  paintBadge($("hbadge"), home);
+  paintBadge($("abadge"), away);
   var rec = function(c){
     var r = c.record || {};
     return r.played ? (r.w + "\u2013" + r.d + "\u2013" + r.l + " \u00b7 " + r.pts + " pts") : "";

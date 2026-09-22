@@ -88,7 +88,8 @@ feed, and their terms do not permit redistributing it. Run `fetch` then `export`
 with your own key and it is generated locally.
 
 `ui/index.html` is a single standalone file. Double-click it. It works offline
-(web fonts fall back to system faces) and sends no requests anywhere.
+and sends no requests anywhere: club badges are downscaled and embedded as data
+URIs rather than hot-linked, and the web fonts fall back to system faces.
 
 Pick a club and it opens their **real next fixture** — correct sides, kickoff time
 and venue — or click along the strip of upcoming matches. A pairing that is not

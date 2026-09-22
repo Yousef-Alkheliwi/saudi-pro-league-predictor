@@ -272,3 +272,40 @@ class TestClientCaching(unittest.TestCase):
             c.month(now.year, now.month)
             self.assertGreater(seen["202403"], 86400)
             self.assertLessEqual(seen["%04d%02d" % (now.year, now.month)], 3600)
+
+
+class TestBadges(unittest.TestCase):
+    """Club crests are cosmetic and must never break a data fetch."""
+
+    def test_client_without_a_cache_returns_no_badges(self):
+        self.assertEqual(E.fetch_logos(TestFetchPipeline.Stub(), {1, 2},
+                                       log=lambda *a: None), {})
+
+    def test_fetch_survives_a_badge_failure(self):
+        class Boom(TestFetchPipeline.Stub):
+            cache_dir = None
+
+            def teams(self):
+                raise RuntimeError("badge service down")
+        ds = E.fetch_dataset(Boom(), seasons=[2026], log=lambda *a: None)
+        self.assertTrue(ds.matches)
+        self.assertEqual(ds.logos, {})
+
+    def test_badges_can_be_switched_off(self):
+        ds = E.fetch_dataset(TestFetchPipeline.Stub(), seasons=[2026],
+                             with_logos=False, log=lambda *a: None)
+        self.assertEqual(ds.logos, {})
+
+    def test_logos_survive_a_save_load_round_trip(self):
+        ds = E.fetch_dataset(TestFetchPipeline.Stub(), seasons=[2026],
+                             with_logos=False, log=lambda *a: None)
+        ds.logos = {929: "data:image/png;base64,AAAA"}
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "ds.json"
+            ds.save(path)
+            back = Dataset.load(path)
+            self.assertEqual(back.logos[929], "data:image/png;base64,AAAA")
+
+    def test_shrink_returns_input_when_it_cannot_resize(self):
+        raw = b"not really a png"
+        self.assertIsInstance(E._shrink_png(raw), bytes)

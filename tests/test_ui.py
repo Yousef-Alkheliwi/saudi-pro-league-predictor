@@ -268,3 +268,30 @@ class TestScheduledFixtures(unittest.TestCase):
     def test_clubs_without_a_fixture_are_marked_in_the_picker(self):
         app = (ROOT / "ui" / "src" / "app.js").read_text()
         self.assertIn("no fixture scheduled", app)
+
+
+class TestClubBadges(unittest.TestCase):
+    def test_export_carries_a_logo_field(self):
+        for c in PAYLOAD["clubs"]:
+            self.assertIn("logo", c)
+
+    def test_page_renders_a_crest_with_an_initials_fallback(self):
+        app = (ROOT / "ui" / "src" / "app.js").read_text()
+        self.assertIn("paintBadge", app)
+        self.assertIn('img.addEventListener("error"', app)   # decode failure
+        self.assertIn("initials(club.name)", app)            # and the fallback
+
+    def test_crest_images_carry_alt_text(self):
+        app = (ROOT / "ui" / "src" / "app.js").read_text()
+        self.assertIn('img.alt = club.name + " badge"', app)
+
+    def test_badge_plate_is_dropped_behind_a_real_crest(self):
+        css = (ROOT / "ui" / "src" / "styles.css").read_text()
+        self.assertIn(".badge.hasimg", css)
+
+    def test_crest_rule_outranks_the_tinted_plate(self):
+        """`.team.h .badge` has three classes, so a bare `.badge.hasimg` loses
+        the cascade and the coloured square shows through the crest."""
+        css = (ROOT / "ui" / "src" / "styles.css").read_text()
+        self.assertIn(".team.h .badge.hasimg", css)
+        self.assertIn(".team.a .badge.hasimg", css)

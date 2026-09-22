@@ -115,6 +115,7 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
         att, dfn = r.strength(tid)
         clubs.append({
             "id": tid, "name": ds.teams.get(tid, str(tid)),
+            "logo": ds.logos.get(tid),
             "attack": round(att, 4), "defence": round(dfn, 4),
             "net": round(att + dfn, 4),
             "record": record.get(tid, {}),

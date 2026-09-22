@@ -94,6 +94,8 @@ class Dataset:
     newest_available_season: Optional[int] = None
     #: which upstream produced this snapshot
     source: str = "API-Football (api-sports.io)"
+    #: team_id -> club badge as a data: URI, embedded so the page stays one file
+    logos: Dict[int, str] = field(default_factory=dict)
     matches: List[Match] = field(default_factory=list)
     #: fixtures from other competitions (AFC Champions League, King's Cup, ...).
     #: These are never used to fit ratings - only to compute rest and congestion,
@@ -113,6 +115,7 @@ class Dataset:
             "plan_limited": self.plan_limited,
             "newest_available_season": self.newest_available_season,
             "source": self.source,
+            "logos": {str(k): v for k, v in self.logos.items()},
             "teams": {str(k): v for k, v in self.teams.items()},
             "matches": [asdict(m) for m in self.matches],
             "other_matches": [asdict(m) for m in self.other_matches],
@@ -137,6 +140,7 @@ class Dataset:
             plan_limited=blob.get("plan_limited", False),
             newest_available_season=blob.get("newest_available_season"),
             source=blob.get("source", "API-Football (api-sports.io)"),
+            logos={int(k): v for k, v in (blob.get("logos") or {}).items()},
             teams={int(k): v for k, v in blob["teams"].items()},
             matches=[Match(**m) for m in blob["matches"]],
             other_matches=[Match(**m) for m in blob.get("other_matches", [])],
