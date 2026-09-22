@@ -46,6 +46,8 @@ def _parse_when(text):
 
 # --------------------------------------------------------------------- commands
 def cmd_fetch(args) -> int:
+    if args.source == "espn":
+        return _fetch_espn(args)
     client = ApiFootball(offline=args.offline)
     seasons = args.seasons or list(MODEL.seasons)
     try:
@@ -73,6 +75,27 @@ def cmd_fetch(args) -> int:
     print("upstream calls: %d   cache hits: %d   daily quota left: %s"
           % (client.calls_made, client.cache_hits,
              client.daily_remaining if client.daily_remaining is not None else "?"))
+    return 0
+
+
+def _fetch_espn(args) -> int:
+    """The free provider: no key, no quota, and the current season included."""
+    from .providers.espn import Espn, EspnError, fetch_dataset as fetch_espn
+    client = Espn(offline=args.offline)
+    try:
+        ds = fetch_espn(client, seasons=args.seasons or None)
+    except EspnError as exc:
+        print("ESPN error: %s" % exc, file=sys.stderr)
+        return 1
+    if not ds.matches:
+        print("\nfetched no fixtures - refusing to overwrite %s with an empty dataset"
+              % (args.dataset or DATASET_PATH), file=sys.stderr)
+        return 1
+    path = ds.save(args.dataset)
+    print("\nsaved %d matches (%d finished), %d teams, %d box-score rows, "
+          "%d injuries -> %s"
+          % (len(ds.matches), len(ds.played_matches), len(ds.teams), len(ds.stats),
+             len(ds.injuries), path))
     return 0
 
 
@@ -188,6 +211,7 @@ def cmd_status(args) -> int:
     if ds:
         print("dataset      %s" % args.dataset or DATASET_PATH)
         print("snapshot     %s" % ds.fetched_at)
+        print("source       %s" % ds.source)
         print("league id    %s" % ds.league_id)
         print("matches      %d total, %d finished, %d scheduled"
               % (len(ds.matches), len(ds.played_matches), len(ds.upcoming_matches)))
@@ -282,7 +306,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="never call the network; use the on-disk cache only")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("fetch", help="pull live data from API-Football")
+    p = sub.add_parser("fetch", help="pull live match data")
+    p.add_argument("--source", choices=("espn", "api-football"), default="espn",
+                   help="espn: free, no key, includes the current season (default). "
+                        "api-football: needs a key; adds injuries and squads on a "
+                        "paid plan")
     p.add_argument("--seasons", type=int, nargs="*", default=None)
     p.add_argument("--no-stats", action="store_true", help="skip per-match box scores")
     p.add_argument("--stats-limit", type=int, default=30,

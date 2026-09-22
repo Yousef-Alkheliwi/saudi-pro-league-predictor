@@ -92,6 +92,8 @@ class Dataset:
     plan_limited: bool = False
     #: newest season the plan actually served
     newest_available_season: Optional[int] = None
+    #: which upstream produced this snapshot
+    source: str = "API-Football (api-sports.io)"
     matches: List[Match] = field(default_factory=list)
     #: fixtures from other competitions (AFC Champions League, King's Cup, ...).
     #: These are never used to fit ratings - only to compute rest and congestion,
@@ -110,6 +112,7 @@ class Dataset:
             "fetched_at": self.fetched_at,
             "plan_limited": self.plan_limited,
             "newest_available_season": self.newest_available_season,
+            "source": self.source,
             "teams": {str(k): v for k, v in self.teams.items()},
             "matches": [asdict(m) for m in self.matches],
             "other_matches": [asdict(m) for m in self.other_matches],
@@ -133,6 +136,7 @@ class Dataset:
             fetched_at=blob["fetched_at"],
             plan_limited=blob.get("plan_limited", False),
             newest_available_season=blob.get("newest_available_season"),
+            source=blob.get("source", "API-Football (api-sports.io)"),
             teams={int(k): v for k, v in blob["teams"].items()},
             matches=[Match(**m) for m in blob["matches"]],
             other_matches=[Match(**m) for m in blob.get("other_matches", [])],

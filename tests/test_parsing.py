@@ -396,8 +396,8 @@ class TestFetchPipeline(unittest.TestCase):
                            matches=[parse_fixture(FIXTURE)])
             good.save(path)
             args = cli.build_parser().parse_args(
-                ["--dataset", str(path), "fetch", "--no-stats", "--no-players",
-                 "--no-schedule"])
+                ["--dataset", str(path), "fetch", "--source", "api-football",
+                 "--no-stats", "--no-players", "--no-schedule"])
             import spl.data as data_mod
             original = data_mod.fetch_dataset
             data_mod.fetch_dataset = lambda *a, **k: Dataset(

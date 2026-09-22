@@ -149,7 +149,7 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
             "plan_limited": ds.plan_limited,
             "newest_available_season": ds.newest_available_season,
             "warnings": _data_warnings(sample),
-            "source": "API-Football (api-sports.io), league %d" % ds.league_id,
+            "source": ds.source,
         },
         "model": {
             "base": round(r.base, 4),

@@ -19,12 +19,36 @@ Inputs the model uses, as asked for:
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env          # then paste your key into .env
+.venv/bin/python -m spl.cli fetch      # no key needed
 ```
 
-Live data comes from [API-Football](https://dashboard.api-football.com/register);
-the free tier is 100 requests/day, which is enough for a daily refresh. A key from
-RapidAPI works too — set `API_FOOTBALL_MODE=rapidapi`.
+That's it. The default data source is **free and needs no API key, no signup and
+no quota**.
+
+### Data sources
+
+| | `--source espn` (default) | `--source api-football` |
+|---|---|---|
+| Cost | free, no key | key required |
+| Current season | **yes** | paid plans only |
+| History | 2022-23 onward | plan-dependent |
+| Box scores | **included with every fixture** | 1 request each |
+| Injuries | none published for this league | paid plans only |
+| Rate limit | none observed | 10/min, 100/day on free |
+
+ESPN's public JSON endpoints return a whole month of fixtures *with their box
+scores* in one request, so a four-season snapshot with ~2,000 team-match box
+scores costs about 40 requests and takes under a minute.
+
+API-Football remains supported because it is the route to injury data. Its free
+tier, though, serves only older seasons — for this league it refuses everything
+after season 2024 — so on a free key it cannot tell you about the season being
+played. To use it:
+
+```bash
+cp .env.example .env                              # paste your key
+.venv/bin/python -m spl.cli fetch --source api-football
+```
 
 ## Use
 
@@ -130,28 +154,27 @@ ratings can otherwise memorise results. It reports log loss, RPS, Brier, accurac
 goal/shot/possession error and a calibration table, against a league base-rate
 baseline. Run it on your own snapshot before trusting any number here.
 
-`.venv/bin/python -m unittest discover -s tests -t .` runs 138 tests. Most assert
+`.venv/bin/python -m unittest discover -s tests -t .` runs 163 tests. Most assert
 recovery: a league is simulated from known parameters and the fit has to find them
 back (home advantage recovers to within 0.006 of truth averaged over seeds, attack
 ratings correlate ~0.93).
 
-## Your API plan decides what "live" means
+## If you use the API-Football source
 
-API-Football's **free tier serves only a window of past seasons** — for this league
-it refused everything after season 2024 with *"Free plans do not have access to
-this season, try from 2022 to 2024"*. That one limit cascades: the team list,
-squads, injuries and upcoming fixtures are all requested for the *current* season,
-so on a free key they fail together.
+Its **free tier serves only a window of past seasons** — for this league it refuses
+everything after season 2024 with *"Free plans do not have access to this season,
+try from 2022 to 2024"*. That limit cascades: the team list, squads, injuries and
+upcoming fixtures are all requested for the *current* season, so on a free key they
+fail together.
 
-The fetch pipeline handles this rather than falling over. It asks for a five-season
-window, keeps whatever the plan serves, and then points every later stage at the
-**newest season that actually loaded**. On a free key you get three full seasons of
-real matches and an honest banner saying the ratings are historical. On a paid key
-the same code picks up the current season, the live injury feed and upcoming
-fixtures with no change.
+The pipeline handles this rather than falling over. It asks for a five-season
+window, keeps whatever the plan serves, then points every later stage at the
+**newest season that actually loaded**, and labels the snapshot as historical so no
+report implies it is current. The free tier is also capped at **10 requests/minute**,
+which is why that fetch paces itself at ~9/min.
 
-Check what your key can see with `status`, and note the free tier is also capped at
-**10 requests/minute**, which is why `fetch` paces itself at ~9/min.
+This is why `espn` is the default: for everything except injuries it is both free
+and more current.
 
 ## Honest limitations
 
@@ -183,10 +206,12 @@ Check what your key can see with `status`, and note the free tier is also capped
   lose only shot/possession precision — fixtures, injuries and rest days are
   already in. `--no-players`, `--no-schedule` and `--no-stats` each trade a chunk
   of the budget for a named loss of accuracy.
-- **The injury feed may not exist on your plan.** For this league API-Football
-  carries injuries on season 2025 only, which a free key cannot reach — so squads
-  show as 100% available because nothing was returned, not because everyone is fit.
-  Every report says so explicitly rather than implying full fitness.
+- **No free injury feed exists for this league.** ESPN publishes an injuries
+  endpoint but returns an empty list for the Saudi Pro League, and API-Football
+  carries injuries only on a season its free tier cannot reach. So squads show as
+  100% available because nothing was returned, not because everyone is fit — every
+  report says so explicitly rather than implying full fitness. The injury model is
+  built and tested; it is waiting on a feed.
 - **No lineup or transfer-window awareness.** A club that sold its top scorer looks
   unchanged until enough matches accumulate. Minutes-weighted ratings adapt within a
   few weeks, not immediately.
@@ -207,7 +232,8 @@ LICENSE                        MIT
 ui/src/                        page sources: styles.css, page.html, app.js
 ui/build.py                    builds ui/index.html (standalone) + artifact.html
 spl/export.py                  precompute every pairing as JSON for the page
-spl/providers/apifootball.py   live-data client: disk cache, TTLs, request budget
+spl/providers/espn.py          free data client: no key, month-at-a-time, cached
+spl/providers/apifootball.py   keyed client: disk cache, TTLs, request budget
 spl/data.py                    normalise payloads; Dataset save/load; name matching
 spl/features.py                rest, congestion, availability, head-to-head, form
 spl/model.py                   Dixon-Coles fit + scoreline matrix + markets
