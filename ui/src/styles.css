@@ -21,7 +21,7 @@
     --accent:#22C98A; --accent-ink:#22C98A; --accent-on:#04120C; --accent-soft:#12291F;
     --home:#4D8FE8; --away:#C9743F; --draw:#94A3B8;
     --home-soft:#152238; --away-soft:#2A1C12;
-    --h0:#101A16; --h1:#14261F; --h2:#183328; --h3:#1D4535;
+    --h0:#1B2523; --h1:#14261F; --h2:#183328; --h3:#1D4535;
     --h4:#235C45; --h5:#2B7659; --h6:#35926E;
     --warn-bg:#241C0C; --warn-line:#6B5520; --warn-ink:#E8CE92;
     --sh-1:0 1px 2px rgba(0,0,0,.5);
@@ -36,7 +36,7 @@
   --accent:#22C98A; --accent-ink:#22C98A; --accent-on:#04120C; --accent-soft:#12291F;
   --home:#4D8FE8; --away:#C9743F; --draw:#94A3B8;
   --home-soft:#152238; --away-soft:#2A1C12;
-  --h0:#101A16; --h1:#14261F; --h2:#183328; --h3:#1D4535;
+  --h0:#1B2523; --h1:#14261F; --h2:#183328; --h3:#1D4535;
   --h4:#235C45; --h5:#2B7659; --h6:#35926E;
   --warn-bg:#241C0C; --warn-line:#6B5520; --warn-ink:#E8CE92;
   --sh-1:0 1px 2px rgba(0,0,0,.5);
@@ -110,7 +110,9 @@ select:hover{border-color:var(--line-2)}
   letter-spacing:.02em}
 .rail-head span{font-size:12px; color:var(--ink-3)}
 .rail-strip{display:flex; gap:9px; overflow-x:auto; padding:2px 2px 8px;
-  scrollbar-width:thin}
+  scrollbar-width:thin;
+  -webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 34px),transparent);
+  mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 34px),transparent)}
 .chip{flex:none; cursor:pointer; text-align:left; background:var(--card);
   border:1px solid var(--line); border-radius:14px; padding:11px 13px;
   min-width:176px; color:var(--ink); box-shadow:var(--sh-1)}
@@ -143,7 +145,7 @@ details.custom summary:hover{color:var(--ink)}
   background:var(--accent); color:var(--accent-on); letter-spacing:.01em}
 .pill.hypo{background:var(--sunk); color:var(--ink-3); border:1px solid var(--line)}
 .teams{display:grid; grid-template-columns:1fr auto 1fr; gap:16px;
-  align-items:center; padding:16px 20px 20px}
+  align-items:center; padding:14px 20px 16px}
 .team{display:flex; flex-direction:column; align-items:center; gap:10px;
   min-width:0; text-align:center}
 .badge{width:54px; height:54px; border-radius:18px; display:grid; place-items:center;
@@ -161,15 +163,18 @@ details.custom summary:hover{color:var(--ink)}
 
 .odds{display:grid; grid-template-columns:repeat(3,1fr); gap:1px;
   background:var(--line); border-top:1px solid var(--line)}
-.odds div{background:var(--card); padding:13px 10px; text-align:center}
+/* direct children only - `.odds div` also matched .k and .v, giving the label
+   and the number the cell's padding and inflating the row to 115px */
+.odds > div{background:var(--card); padding:11px 10px; text-align:center}
 .odds .k{font-size:11px; color:var(--ink-3); font-weight:600; margin-bottom:3px;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
-.odds .v{font-size:20px; font-weight:800; letter-spacing:-.03em;
-  font-variant-numeric:tabular-nums}
+.odds .v{font-size:19px; font-weight:800; letter-spacing:-.03em;
+  font-variant-numeric:tabular-nums; margin-top:1px}
 .odds .h .v{color:var(--home)} .odds .d .v{color:var(--draw)}
 .odds .a .v{color:var(--away)}
-.bar{display:flex; height:9px; gap:2px; padding:0 20px 18px; background:var(--card)}
-.bar i{display:block; border-radius:3px; flex:0 0 0px; transition:flex-grow .4s ease}
+.bar{display:flex; gap:2px; padding:2px 20px 18px; background:var(--card)}
+.bar i{display:block; height:9px; border-radius:3px; flex:0 0 0px;
+  transition:flex-grow .4s ease}
 .bar .bh{background:var(--home)} .bar .bd{background:var(--draw)}
 .bar .ba{background:var(--away)}
 
@@ -292,13 +297,24 @@ footer{margin-top:32px; padding-top:18px; border-top:1px solid var(--line);
   box-shadow:var(--sh-2)}
 #tip.on{opacity:1}
 
+@media (max-width:560px){
+  .mast-in{flex-wrap:wrap; gap:9px; padding:9px 16px}
+  .brand{order:1; margin-right:auto}
+  .iconbtn{order:2}
+  .seg{order:3; width:100%; justify-content:space-between}
+  .seg button{flex:1; padding:7px 8px}
+  .brand b{font-size:14px}
+  .brand span{font-size:10.5px}
+  .crest{width:28px; height:28px; border-radius:9px; font-size:11px}
+}
 @media (max-width:740px){
   .cols{grid-template-columns:1fr}
   .teams{grid-template-columns:1fr auto 1fr; gap:8px}
   .badge{width:44px; height:44px; border-radius:15px; font-size:14px}
   .team .nm{font-size:14px}
   .vs .sc{font-size:31px}
-  .controls{flex-direction:column; align-items:stretch}
+  .controls{flex-direction:column; align-items:stretch; gap:10px}
+  .field{flex:0 0 auto}
   .swapbtn{width:100%; height:42px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}

@@ -80,9 +80,9 @@ if (META.warnings && META.warnings.length){
       + " moved on since.</p>");
   }
   if (!META.injuries_available){
-    parts.push("<p>No injury feed is available on that plan either, so"
-      + " <strong>every squad here is treated as fully fit</strong>. The injury"
-      + " model is built and tested — it just has nothing to eat.</p>");
+    parts.push("<p><strong>Every squad here is treated as fully fit.</strong> No "
+      + "free injury feed exists for this league, so nothing was returned \u2014 "
+      + "which is not the same as everyone being available.</p>");
   }
   parts.push("<p>Everything else is real: " + META.n_matches.toLocaleString()
     + " actual Saudi Pro League matches and " + META.box_score_rows

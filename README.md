@@ -4,6 +4,8 @@ Predicts Saudi Pro League matches from live data: result probabilities, goals
 scored and conceded, shots, shots on target, possession and corners — with the
 reasoning behind each number shown alongside it.
 
+![The Predict view: a fixture card with win probabilities, summary tiles and the scoreline grid](docs/img/predict-light.png)
+
 Inputs the model uses, as asked for:
 
 | Input | How it is used |
@@ -88,11 +90,35 @@ with your own key and it is generated locally.
 `ui/index.html` is a single standalone file. Double-click it. It works offline
 (web fonts fall back to system faces) and sends no requests anywhere.
 
-Three tabs: **Predict** — pick any home/away pair of the 18 clubs and get the
-result bar with fair odds, a scoreline probability grid, the goals markets,
-opposing bars for possession/shots/shots-on-target/corners/xG, and the inputs that
-moved it. **Ratings** — sortable attack/defence table against real points.
-**Method** — the model and its limits.
+Pick a club and it opens their **real next fixture** — correct sides, kickoff time
+and venue — or click along the strip of upcoming matches. A pairing that is not
+actually scheduled is labelled *Hypothetical*, so a real fixture and an invented
+matchup never look alike.
+
+### Predict
+
+Win probabilities and fair odds, summary tiles, a scoreline probability grid, the
+goals markets, opposing bars for possession, shots, shots on target and corners,
+and the inputs that moved the numbers.
+
+<img src="docs/img/predict-dark.png" alt="The Predict view in dark mode, showing the scoreline probability grid and goals markets" width="100%">
+
+### Ratings
+
+Fitted attack and defence for every club, sortable, next to their real league
+record. The two orders disagree, which is the time decay doing its job.
+
+<img src="docs/img/ratings.png" alt="Sortable table of fitted attack, defence and net ratings beside league records" width="100%">
+
+### Method, and on a phone
+
+The model, its assumptions and its limits are written into the page itself. The
+whole thing reflows to phone width.
+
+<p>
+<img src="docs/img/method.png" alt="The Method tab explaining the model" width="62%">
+<img src="docs/img/mobile.png" alt="The same page at phone width" width="34%">
+</p>
 
 The page does **no modelling**. `export` precomputes all 306 club pairings with the
 same Python code the test suite covers, so the page and the command line cannot
