@@ -6,6 +6,17 @@ var BY_ID = {}, PAIR = {};
 CLUBS.forEach(function(c){ BY_ID[c.id] = c; });
 DATA.pairings.forEach(function(p){ PAIR[p.home + ">" + p.away] = p; });
 
+var FIXTURES = (DATA.fixtures || []).slice().sort(function(a,b){
+  return a.kickoff < b.kickoff ? -1 : a.kickoff > b.kickoff ? 1 : 0;
+});
+/* a club's next scheduled fixture, and a lookup for "is this pairing real?" */
+var NEXT_OF = {}, FIXTURE_AT = {};
+FIXTURES.forEach(function(f){
+  FIXTURE_AT[f.home + ">" + f.away] = FIXTURE_AT[f.home + ">" + f.away] || f;
+  if (!NEXT_OF[f.home]) NEXT_OF[f.home] = f;
+  if (!NEXT_OF[f.away]) NEXT_OF[f.away] = f;
+});
+
 var $ = function(id){ return document.getElementById(id); };
 var pct = function(x){ return (100*x).toFixed(1) + "%"; };
 var pct0 = function(x){ return Math.round(100*x) + "%"; };
@@ -51,6 +62,7 @@ TABS.forEach(function(t){
     TABS.forEach(function(o){
       var on = o[0] === t[0];
       $(o[0]).setAttribute("aria-selected", on ? "true" : "false");
+      if (on) window.scrollTo({top: 0, behavior: "auto"});
       $(o[1]).hidden = !on;
     });
   });
@@ -80,11 +92,13 @@ if (META.warnings && META.warnings.length){
 }
 
 /* ---------- selects ---------- */
-var homesel = $("homesel"), awaysel = $("awaysel");
+var homesel = $("homesel"), awaysel = $("awaysel"), clubsel = $("clubsel");
 CLUBS.forEach(function(c){
-  [homesel, awaysel].forEach(function(sel){
+  [homesel, awaysel, clubsel].forEach(function(sel){
     var o = document.createElement("option");
-    o.value = c.id; o.textContent = c.name;
+    o.value = c.id;
+    o.textContent = sel === clubsel && !NEXT_OF[c.id]
+      ? c.name + "  (no fixture scheduled)" : c.name;
     sel.appendChild(o);
   });
 });
@@ -94,7 +108,13 @@ function findId(frag){
   }
   return CLUBS[0].id;
 }
-var startHome = findId("hilal"), startAway = findId("nassr");
+/* open on the next real fixture, so the page shows something live at rest */
+var startHome, startAway;
+if (FIXTURES.length){
+  startHome = FIXTURES[0].home; startAway = FIXTURES[0].away;
+} else {
+  startHome = findId("hilal"); startAway = findId("nassr");
+}
 try {
   var saved = JSON.parse(localStorage.getItem("spl-fixture") || "null");
   if (saved && BY_ID[saved[0]] && BY_ID[saved[1]] && saved[0] !== saved[1]){
@@ -109,11 +129,84 @@ function guard(changed){
     if (changed === "home") awaysel.value = other.id; else homesel.value = other.id;
   }
 }
-homesel.addEventListener("change", function(){ guard("home"); render(); });
-awaysel.addEventListener("change", function(){ guard("away"); render(); });
-$("swapbtn").addEventListener("click", function(){
-  var h = homesel.value; homesel.value = awaysel.value; awaysel.value = h; render();
+homesel.addEventListener("change", function(){
+  guard("home"); clubsel.value = ""; render();
 });
+awaysel.addEventListener("change", function(){
+  guard("away"); clubsel.value = ""; render();
+});
+$("swapbtn").addEventListener("click", function(){
+  var h = homesel.value; homesel.value = awaysel.value; awaysel.value = h;
+  clubsel.value = ""; render();
+});
+
+/* Picking a club jumps straight to their next real fixture, keeping the true
+   home and away sides - the club you chose may well be the away team. */
+clubsel.addEventListener("change", function(){
+  var id = parseInt(clubsel.value, 10);
+  if (!id) return;
+  var f = NEXT_OF[id];
+  if (!f){
+    homesel.value = id;
+    if (String(id) === awaysel.value) guard("home");
+    render();
+    return;
+  }
+  homesel.value = f.home; awaysel.value = f.away;
+  render();
+});
+
+function showFixtureStrip(activeKey){
+  var host = $("rail-strip");
+  if (!FIXTURES.length){ $("rail").hidden = true; return; }
+  $("rail").hidden = false;
+  $("rail-sub").textContent = FIXTURES.length + " scheduled \u00b7 from "
+    + FIXTURES[0].day;
+  if (!host.childElementCount){
+    FIXTURES.slice(0, 18).forEach(function(f){
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "chip";
+      b.setAttribute("data-key", f.home + ">" + f.away);
+      b.innerHTML = '<div class="d">' + f.label.replace(" UTC","") + "</div>"
+        + '<div class="t">' + BY_ID[f.home].name
+        + ' <i>v</i> ' + BY_ID[f.away].name + "</div>";
+      b.addEventListener("click", function(){
+        homesel.value = f.home; awaysel.value = f.away;
+        clubsel.value = ""; render();
+      });
+      host.appendChild(b);
+    });
+  }
+  Array.prototype.forEach.call(host.children, function(el){
+    el.setAttribute("aria-current",
+      el.getAttribute("data-key") === activeKey ? "true" : "false");
+  });
+}
+
+function initials(name){
+  var words = String(name).replace(/[^A-Za-z ]/g, " ").split(/\s+/)
+    .filter(function(w){ return w && w.toLowerCase() !== "al"; });
+  if (!words.length) words = [String(name)];
+  return words.slice(0, 2).map(function(w){ return w[0].toUpperCase(); }).join("");
+}
+
+function buildTiles(p, home, away){
+  var t = p.tempo;
+  var lead = p.p.home >= p.p.away ? home : away;
+  var leadP = Math.max(p.p.home, p.p.away);
+  var tiles = [
+    ["Favourite", lead.name.replace(/^Al /, "Al "), pct0(leadP) + " to win"],
+    ["Expected goals", p.xg.home.toFixed(2) + " \u2013 " + p.xg.away.toFixed(2),
+     p.xg.total.toFixed(2) + " total"],
+    ["Both to score", pct0(p.markets.btts), "over 2.5: " + pct0(p.markets["over_2.5"])],
+    ["Possession", Math.round(t.poss[0]) + " \u2013 " + Math.round(t.poss[1]),
+     "shots " + t.shots[0].toFixed(1) + " \u2013 " + t.shots[1].toFixed(1)]
+  ];
+  $("tiles").innerHTML = tiles.map(function(r){
+    return '<div class="tile"><div class="k">' + r[0] + '</div><div class="v">'
+      + r[1] + '</div><div class="s">' + r[2] + "</div></div>";
+  }).join("");
+}
 
 /* ---------- scoreline grid ---------- */
 var RAMP = ["--h0","--h1","--h2","--h3","--h4","--h5","--h6"];
@@ -142,7 +235,7 @@ function buildGrid(p, homeName, awayName){
       var cell = document.createElement("div");
       cell.className = "sg-cell" + (i === pi && j === pj ? " peak" : "");
       cell.style.background = "var(" + RAMP[step] + ")";
-      cell.style.color = step >= 5 ? "#fff" : "var(--ink)";
+      cell.style.color = step >= 5 ? "var(--card)" : "var(--ink)";
       if (v >= 0.03) cell.textContent = Math.round(100 * v);
       bindTip(cell, homeName + " " + i + "–" + j + " " + awayName
         + "  ·  " + pct(v));
@@ -170,14 +263,10 @@ function buildMarkets(p, homeName, awayName){
   rows.forEach(function(r){
     var d = document.createElement("div");
     d.className = "mrow";
-    var nm = document.createElement("span"); nm.className = "nm"; nm.textContent = r[0];
-    var vl = document.createElement("span"); vl.className = "vl num"; vl.textContent = r[1];
-    d.appendChild(nm); d.appendChild(vl);
-    if (r[2] !== null){
-      var mt = document.createElement("div"); mt.className = "meter";
-      var i = document.createElement("i"); i.style.width = (100*r[2]).toFixed(1) + "%";
-      mt.appendChild(i); d.appendChild(mt);
-    }
+    d.innerHTML = '<div class="line"><span class="nm">' + r[0]
+      + '</span><span class="vl">' + r[1] + "</span></div>"
+      + (r[2] !== null ? '<div class="meter"><i style="width:'
+          + (100*r[2]).toFixed(1) + '%"></i></div>' : "");
     host.appendChild(d);
   });
 }
@@ -200,9 +289,9 @@ function buildCompare(p, homeName, awayName){
     var wrap = document.createElement("div");
     wrap.className = "cmp-row";
     wrap.innerHTML =
-      '<div class="top"><span class="vh num">' + a.toFixed(dp) + unit + '</span>'
+      '<div class="top"><span class="vh">' + a.toFixed(dp) + unit + '</span>'
       + '<span class="nm">' + r[0] + '</span>'
-      + '<span class="va num">' + b.toFixed(dp) + unit + '</span></div>'
+      + '<span class="va">' + b.toFixed(dp) + unit + '</span></div>'
       + '<div class="cmp-track">'
       + '<span class="cmp-half l"><i style="width:' + (100*a/max) + '%"></i></span>'
       + '<span class="cmp-half r"><i style="width:' + (100*b/max) + '%"></i></span>'
@@ -245,8 +334,8 @@ function buildWhy(p, home, away){
   rows.forEach(function(r){
     var d = document.createElement("div");
     d.className = "wrow";
-    d.innerHTML = '<span class="k">' + r[0] + '</span><span class="v '
-      + (r[2] ? "form-str" : "num") + '">' + r[1] + '</span>';
+    d.innerHTML = '<span class="k">' + r[0] + '</span><span class="v'
+      + (r[2] ? " form" : "") + '">' + r[1] + '</span>';
     host.appendChild(d);
   });
 }
@@ -261,33 +350,48 @@ function render(){
 
   $("homename").textContent = home.name;
   $("awayname").textContent = away.name;
+  $("hbadge").textContent = initials(home.name);
+  $("abadge").textContent = initials(away.name);
   var rec = function(c){
     var r = c.record || {};
-    return r.played ? (r.w + "–" + r.d + "–" + r.l + "  ·  " + r.pts + " pts")
-      : "";
+    return r.played ? (r.w + "\u2013" + r.d + "\u2013" + r.l + " \u00b7 " + r.pts + " pts") : "";
   };
-  $("homemeta").textContent = rec(home);
-  $("awaymeta").textContent = rec(away);
+  $("homerec").textContent = rec(home);
+  $("awayrec").textContent = rec(away);
 
   var top = p.scores[0];
-  $("heroscore").textContent = top.s.replace("-", "–");
-  $("heropct").textContent = pct(top.p) + " · next " + p.scores[1].s.replace("-","–");
+  $("heroscore").textContent = top.s.replace("-", "\u2013");
+  $("heropct").textContent = pct(top.p);
 
   var ph = p.p.home, pd = p.p.draw, pa = p.p.away;
-  $("seg-home").style.flexGrow = ph; $("seg-draw").style.flexGrow = pd;
-  $("seg-away").style.flexGrow = pa;
-  $("seg-home-t").textContent = ph > 0.13 ? pct0(ph) : "";
-  $("seg-draw-t").textContent = pd > 0.13 ? pct0(pd) : "";
-  $("seg-away-t").textContent = pa > 0.13 ? pct0(pa) : "";
-  bindTip($("seg-home"), home.name + " win · " + pct(ph) + " · fair odds " + odds(ph));
-  bindTip($("seg-draw"), "Draw · " + pct(pd) + " · fair odds " + odds(pd));
-  bindTip($("seg-away"), away.name + " win · " + pct(pa) + " · fair odds " + odds(pa));
-  $("k-home").innerHTML = home.name + " <b>" + pct(ph) + "</b> &middot; " + odds(ph);
-  $("k-draw").innerHTML = "Draw <b>" + pct(pd) + "</b> &middot; " + odds(pd);
-  $("k-away").innerHTML = away.name + " <b>" + pct(pa) + "</b> &middot; " + odds(pa);
+  $("bh").style.flexGrow = ph;
+  $("bd").style.flexGrow = pd;
+  $("ba").style.flexGrow = pa;
+  bindTip($("bh"), home.name + " win \u00b7 " + pct(ph) + " \u00b7 fair odds " + odds(ph));
+  bindTip($("bd"), "Draw \u00b7 " + pct(pd) + " \u00b7 fair odds " + odds(pd));
+  bindTip($("ba"), away.name + " win \u00b7 " + pct(pa) + " \u00b7 fair odds " + odds(pa));
+  $("ok-h").textContent = home.name;
+  $("ok-a").textContent = away.name;
+  $("ov-h").textContent = pct0(ph);
+  $("ov-d").textContent = pct0(pd);
+  $("ov-a").textContent = pct0(pa);
+  buildTiles(p, home, away);
+
+  var key = hid + ">" + aid;
+  var fixture = FIXTURE_AT[key];
+  var ko = $("herometa");
+  if (fixture){
+    ko.innerHTML = '<span class="pill">Next fixture</span><span>'
+      + fixture.label + (fixture.venue ? " \u00b7 " + fixture.venue : "")
+      + "</span>";
+  } else {
+    ko.innerHTML = '<span class="pill hypo">Hypothetical</span>'
+      + "<span>Not a scheduled fixture \u2014 how the model rates the matchup.</span>";
+  }
+  showFixtureStrip(key);
 
   buildGrid(p, home.name, away.name);
-  $("gridaxis").innerHTML = "&larr; " + home.name + " goals down  &middot;  "
+  $("axnote").innerHTML = "&larr; " + home.name + " goals down  &middot;  "
     + away.name + " goals across &rarr;";
   buildMarkets(p, home.name, away.name);
   buildCompare(p, home.name, away.name);
@@ -328,7 +432,7 @@ function drawTable(){
       + '<td class="num">' + sgn(c.attack) + "</td>"
       + '<td class="num">' + sgn(c.defence) + "</td>"
       + '<td class="num"><b>' + sgn(c.net) + "</b></td>"
-      + '<td><span class="bipolar"><span class="neg">'
+      + '<td><span class="bip"><span class="neg">'
         + (c.net < 0 ? '<i style="width:' + w + '%"></i>' : "")
         + '</span><span class="pos">'
         + (c.net >= 0 ? '<i style="width:' + w + '%"></i>' : "")

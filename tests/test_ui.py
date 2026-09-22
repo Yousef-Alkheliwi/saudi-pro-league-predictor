@@ -196,9 +196,9 @@ class TestPageBuild(unittest.TestCase):
         """flex-grow alone is not proportional - each segment's base width would
         come from its own label text, so the bar would not read to scale."""
         css = (ROOT / "ui" / "src" / "styles.css").read_text()
-        seg = re.search(r"\.rb-seg\{([^}]*)\}", css).group(1)
-        compact = re.sub(r"\s+", "", seg)
-        self.assertIn("flex:000px", compact)   # i.e. flex: 0 0 0px
+        bar = re.search(r"\.bar i\{([^}]*)\}", css).group(1)
+        compact = re.sub(r"\s+", "", bar)
+        self.assertIn("flex:00", compact)   # flex-basis 0, so width tracks the value
 
     def test_no_viewport_height_hero(self):
         self.assertNotIn("100vh", self.standalone)
@@ -206,3 +206,65 @@ class TestPageBuild(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestScheduledFixtures(unittest.TestCase):
+    """Choosing a club must land on their real next match."""
+
+    def test_fixtures_are_exported(self):
+        self.assertIn("fixtures", PAYLOAD)
+        self.assertIsInstance(PAYLOAD["fixtures"], list)
+
+    def test_fixtures_are_sorted_by_kickoff(self):
+        ks = [f["kickoff"] for f in PAYLOAD["fixtures"]]
+        self.assertEqual(ks, sorted(ks))
+
+    def test_fixtures_carry_what_the_page_shows(self):
+        for f in PAYLOAD["fixtures"]:
+            for key in ("home", "away", "kickoff", "label", "day"):
+                self.assertIn(key, f)
+            self.assertNotEqual(f["home"], f["away"])
+
+    def test_fixtures_only_reference_exported_clubs(self):
+        """A fixture naming a club not in the dropdown would break the lookup."""
+        ids = {c["id"] for c in PAYLOAD["clubs"]}
+        for f in PAYLOAD["fixtures"]:
+            self.assertIn(f["home"], ids)
+            self.assertIn(f["away"], ids)
+
+    def test_every_fixture_has_a_precomputed_pairing(self):
+        """Selecting a fixture must never hit a missing pairing."""
+        pairs = {(p["home"], p["away"]) for p in PAYLOAD["pairings"]}
+        for f in PAYLOAD["fixtures"]:
+            self.assertIn((f["home"], f["away"]), pairs)
+
+    def test_only_unplayed_matches_are_exported_as_fixtures(self):
+        played = {(m.home_id, m.away_id, m.kickoff) for m in DS.played_matches}
+        for f in PAYLOAD["fixtures"]:
+            self.assertNotIn((f["home"], f["away"], f["kickoff"]), played)
+
+    def test_page_wires_the_club_picker(self):
+        page = (ROOT / "ui" / "src" / "page.html").read_text()
+        app = (ROOT / "ui" / "src" / "app.js").read_text()
+        self.assertIn('id="clubsel"', page)
+        self.assertIn('id="rail-strip"', page)
+        self.assertIn('id="herometa"', page)
+        self.assertIn("NEXT_OF", app)
+        self.assertIn("FIXTURE_AT", app)
+
+    def test_club_choice_keeps_true_home_and_away(self):
+        """The chosen club may be the away side; the page must not flip it."""
+        app = (ROOT / "ui" / "src" / "app.js").read_text()
+        block = app[app.index('clubsel.addEventListener'):]
+        block = block[:block.index("function showFixtureStrip")]
+        self.assertIn("homesel.value = f.home", block)
+        self.assertIn("awaysel.value = f.away", block)
+
+    def test_real_and_hypothetical_pairings_are_labelled_differently(self):
+        app = (ROOT / "ui" / "src" / "app.js").read_text()
+        self.assertIn("Next fixture", app)
+        self.assertIn("Hypothetical", app)
+
+    def test_clubs_without_a_fixture_are_marked_in_the_picker(self):
+        app = (ROOT / "ui" / "src" / "app.js").read_text()
+        self.assertIn("no fixture scheduled", app)

@@ -132,6 +132,20 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
                 continue
             pairings.append(_pairing(predictor.predict(home, away)))
 
+    # Real scheduled fixtures, so the page can open a club's actual next match
+    # rather than making the reader guess an opponent.
+    club_set = set(club_ids)
+    fixtures = []
+    for m in ds.upcoming_matches:
+        if m.home_id in club_set and m.away_id in club_set:
+            fixtures.append({"home": m.home_id, "away": m.away_id,
+                             "kickoff": m.dt.isoformat(),
+                             "label": m.dt.strftime("%a %d %b, %H:%M UTC"),
+                             "day": m.dt.strftime("%d %b"),
+                             "venue": m.venue})
+    fixtures.sort(key=lambda f: f["kickoff"])
+    log("%d scheduled fixtures exported" % len(fixtures))
+
     sample = predictor.predict(club_ids[0], club_ids[1])
     newest = played[-1] if played else None
     return {
@@ -170,6 +184,7 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
             "grid": GRID,
         },
         "clubs": clubs,
+        "fixtures": fixtures,
         "pairings": pairings,
     }
 
