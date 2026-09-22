@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# credentials - never commit
+.env
+
+# API response cache and fetched snapshots (regenerate with `spl.cli fetch`)
+data/cache/
+data/spl_dataset.json
+data/demo.json
+
+# fetched/derived match data - not redistributed (API provider's terms)
+ui/data.json
+
+# generated pages (rebuild with `python3 ui/build.py`)
+ui/index.html
+ui/artifact.html

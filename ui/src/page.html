@@ -1,0 +1,169 @@
+<div class="mast">
+  <div class="mast-in">
+    <div class="brand">
+      <div class="crest">SPL</div>
+      <div>
+        <b>Match Lab</b>
+        <span>Saudi Pro League</span>
+      </div>
+    </div>
+    <div class="tabs" role="tablist" aria-label="Views">
+      <button class="tab" id="tab-predict" role="tab" aria-selected="true" aria-controls="view-predict">Predict</button>
+      <button class="tab" id="tab-ratings" role="tab" aria-selected="false" aria-controls="view-ratings">Ratings</button>
+      <button class="tab" id="tab-method" role="tab" aria-selected="false" aria-controls="view-method">Method</button>
+    </div>
+    <button class="ghost" id="themebtn" type="button" aria-label="Switch colour theme">Theme</button>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="notice" id="notice" hidden>
+    <div class="tag">HEADS<br>UP</div>
+    <div id="noticebody"></div>
+  </div>
+
+  <!-- ============ PREDICT ============ -->
+  <section id="view-predict" role="tabpanel" aria-labelledby="tab-predict">
+
+    <div class="picker">
+      <div class="field">
+        <label for="homesel">Home club</label>
+        <select id="homesel"></select>
+      </div>
+      <button class="swapbtn" id="swapbtn" type="button" title="Swap home and away" aria-label="Swap home and away">&#8646;</button>
+      <div class="field">
+        <label for="awaysel">Away club</label>
+        <select id="awaysel"></select>
+      </div>
+    </div>
+
+    <div class="fixture">
+      <div class="fx-top">
+        <div class="side home">
+          <div class="rail"></div>
+          <div class="who" id="homename">&mdash;</div>
+          <div class="meta" id="homemeta"></div>
+        </div>
+        <div class="hero">
+          <div class="lbl">Most likely</div>
+          <div class="score" id="heroscore">&mdash;</div>
+          <div class="pct" id="heropct"></div>
+        </div>
+        <div class="side away">
+          <div class="rail"></div>
+          <div class="who" id="awayname">&mdash;</div>
+          <div class="meta" id="awaymeta"></div>
+        </div>
+      </div>
+
+      <div class="resultbar">
+        <div class="rb-track" id="rbtrack">
+          <div class="rb-seg rb-home" id="seg-home"><span id="seg-home-t"></span></div>
+          <div class="rb-seg rb-draw" id="seg-draw"><span id="seg-draw-t"></span></div>
+          <div class="rb-seg rb-away" id="seg-away"><span id="seg-away-t"></span></div>
+        </div>
+        <div class="rb-key">
+          <div class="keyitem"><i class="dot" style="background:var(--home)"></i>
+            <span id="k-home"></span></div>
+          <div class="keyitem"><i class="dot" style="background:var(--draw)"></i>
+            <span id="k-draw"></span></div>
+          <div class="keyitem"><i class="dot" style="background:var(--away)"></i>
+            <span id="k-away"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div class="panel">
+        <h3>Scoreline probability</h3>
+        <p class="sub">Every exact score the model gives a chance to. Darker is likelier; the outlined cell is the single most likely result.</p>
+        <div class="gridwrap"><div class="sgrid" id="sgrid"></div></div>
+        <div class="axlabel" id="gridaxis">Away goals &rarr;</div>
+      </div>
+      <div class="panel">
+        <h3>Goals</h3>
+        <p class="sub">Derived from the same scoreline distribution, so these always agree with the grid.</p>
+        <div class="mkt" id="mkt"></div>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div class="panel">
+        <h3>Shots &amp; possession</h3>
+        <p class="sub" id="tempo-sub"></p>
+        <div class="cmp" id="cmp"></div>
+      </div>
+      <div class="panel">
+        <h3>What moved the numbers</h3>
+        <p class="sub">The inputs behind the prediction, for this fixture.</p>
+        <div class="whygrid" id="why"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ RATINGS ============ -->
+  <section id="view-ratings" role="tabpanel" aria-labelledby="tab-ratings" hidden>
+    <div class="panel" style="margin-top:22px">
+      <h3>Fitted team strength</h3>
+      <p class="sub">Attack raises the goals a club scores; defence lowers the goals it concedes. Both are on the log goal-rate scale and centred on the league average, so <code>0.00</code> is exactly average. Click a heading to sort.</p>
+      <div class="tablewrap">
+        <table id="rtable">
+          <thead><tr>
+            <th data-k="name">Club<span class="ind"></span></th>
+            <th data-k="attack">Attack<span class="ind"></span></th>
+            <th data-k="defence">Defence<span class="ind"></span></th>
+            <th data-k="net" aria-sort="descending">Net<span class="ind"></span></th>
+            <th>Shape</th>
+            <th data-k="pts">Pts<span class="ind"></span></th>
+            <th data-k="rec">W&ndash;D&ndash;L<span class="ind"></span></th>
+            <th data-k="gd">GD<span class="ind"></span></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="sub" style="margin:14px 0 0" id="rfoot"></p>
+    </div>
+  </section>
+
+  <!-- ============ METHOD ============ -->
+  <section id="view-method" role="tabpanel" aria-labelledby="tab-method" hidden>
+    <div class="panel prose" style="margin-top:22px">
+      <div class="statline" id="modelstats"></div>
+
+      <h3>The goal model</h3>
+      <p>A Dixon&ndash;Coles model fitted by weighted maximum likelihood. Each side gets a goal rate:</p>
+      <div class="eq">log &lambda;<sub>home</sub> = base + attack[home] &minus; defence[away] + home_adv<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ b_rest &middot; rest(home) + b_cong &middot; congestion(home)</div>
+      <p>Those two rates give a probability for every scoreline, and every number on the Predict tab &mdash; win chances, over/under, both teams to score, expected goals &mdash; is read off that one distribution. That is why the grid and the goals panel can never disagree.</p>
+
+      <h3>Four things that matter</h3>
+      <ul>
+        <li><b>Low-score dependence (&rho;).</b> Independent Poisson under-predicts 0&ndash;0 and 1&ndash;1 and over-predicts 1&ndash;0. The Dixon&ndash;Coles correction fixes it.</li>
+        <li><b>Time decay.</b> Older matches are weighted down on a half-life, so recent form leads without discarding history.</li>
+        <li><b>Ridge shrinkage.</b> Attack and defence are pulled toward the league mean, which stops a club with few matches from getting an extreme rating.</li>
+        <li><b>Schedule effects are fitted, not assumed.</b> Rest days and 14-day congestion are computable for every historical match, so they are estimated from data rather than guessed.</li>
+      </ul>
+
+      <h3>Shots and possession</h3>
+      <p>The same additive shape, fitted by weighted ridge regression on real box scores:</p>
+      <div class="eq">possession = c + pull[team] &minus; pull[opponent] + home<br>log(shots)&nbsp;&nbsp;= c + generation[team] &minus; suppression[opponent] + home</div>
+      <p>The design is antisymmetric in team and opponent, which is what makes possession sum to 100 and keeps the two halves of a fixture consistent with each other.</p>
+
+      <h3>Where the numbers come from</h3>
+      <p id="provenance"></p>
+
+      <h3>What this does not know</h3>
+      <ul id="limits"></ul>
+
+      <h3>Judging it honestly</h3>
+      <p>A 55% favourite loses 45% of the time, so single results prove nothing. The command-line tool ships a walk-forward backtest that refits on matches strictly before each kickoff and scores the prediction it would have made &mdash; log loss, ranked probability score, and a calibration table against a base-rate baseline. That, not any one call, is the thing to judge.</p>
+      <p>Run <code>python -m spl.cli backtest</code> on your own snapshot.</p>
+    </div>
+  </section>
+
+  <footer>
+    <span id="footmeta"></span>
+  </footer>
+</div>
+<div id="tip" aria-hidden="true"></div>
