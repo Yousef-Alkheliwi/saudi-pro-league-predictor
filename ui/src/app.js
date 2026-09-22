@@ -210,6 +210,16 @@ function crestTag(club, cls){
   return '<img class="' + cls + '" src="' + club.logo + '" alt="">';
 }
 
+/* The distinguishing part of a club name: almost every club here is "Al
+   something", so the first word identifies none of them. */
+function shortName(name){
+  var w = String(name).split(/\s+/).filter(Boolean);
+  if (w.length > 1 && w[0].toLowerCase().replace(/[^a-z]/g, "") === "al") {
+    return w.slice(1).join(" ");
+  }
+  return w.join(" ");
+}
+
 function initials(name){
   var words = String(name).replace(/[^A-Za-z ]/g, " ").split(/\s+/)
     .filter(function(w){ return w && w.toLowerCase() !== "al"; });
@@ -222,7 +232,7 @@ function buildTiles(p, home, away){
   var lead = p.p.home >= p.p.away ? home : away;
   var leadP = Math.max(p.p.home, p.p.away);
   var tiles = [
-    ["Favourite", lead.name.replace(/^Al /, "Al "), pct0(leadP) + " to win"],
+    ["Favourite", lead.name, pct0(leadP) + " to win"],
     ["Expected goals", p.xg.home.toFixed(2) + " \u2013 " + p.xg.away.toFixed(2),
      p.xg.total.toFixed(2) + " total"],
     ["Both to score", pct0(p.markets.btts), "over 2.5: " + pct0(p.markets["over_2.5"])],
@@ -350,9 +360,9 @@ function buildWhy(p, home, away){
         + "L in " + h2h.n) : "no meetings"],
     ["H2H average score", h2h.n ? (h2h.gf.toFixed(1) + "–" + h2h.ga.toFixed(1))
         : "–"],
-    ["Form, " + home.name.split(" ")[0], formSpan(c.form[0].r) + "  "
+    ["Form, " + shortName(home.name), formSpan(c.form[0].r) + "  "
         + c.form[0].ppg.toFixed(2) + " ppg", true],
-    ["Form, " + away.name.split(" ")[0], formSpan(c.form[1].r) + "  "
+    ["Form, " + shortName(away.name), formSpan(c.form[1].r) + "  "
         + c.form[1].ppg.toFixed(2) + " ppg", true],
     ["Confidence", p.conf]
   ];

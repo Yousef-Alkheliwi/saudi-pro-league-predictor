@@ -4,7 +4,7 @@ Predicts Saudi Pro League matches from live data: result probabilities, goals
 scored and conceded, shots, shots on target, possession and corners — with the
 reasoning behind each number shown alongside it.
 
-![The Predict view: a fixture card with win probabilities, summary tiles and the scoreline grid](docs/img/predict-light.png)
+![Al Hilal versus Al Ittihad: club badges, likeliest score 2-1, win probabilities 67/19/14, and summary tiles for expected goals, both-teams-to-score and possession](docs/img/fixture.png)
 
 Inputs the model uses, as asked for:
 
@@ -98,27 +98,32 @@ matchup never look alike.
 
 ### Predict
 
-Win probabilities and fair odds, summary tiles, a scoreline probability grid, the
-goals markets, opposing bars for possession, shots, shots on target and corners,
-and the inputs that moved the numbers.
+Win probabilities and fair odds, then every exact scoreline the model gives a
+chance to. The goals markets are read off that same distribution, so the grid and
+the panel beside it can never disagree.
 
-<img src="docs/img/predict-dark.png" alt="The Predict view in dark mode, showing the scoreline probability grid and goals markets" width="100%">
+![The scoreline probability grid beside the goals markets](docs/img/scoreline.png)
+
+Shots, possession, shots on target and corners come from models fitted on real box
+scores — and the panel beside them shows exactly which inputs moved this
+prediction, down to rest days and head-to-head.
+
+![Shots and possession bars beside the inputs behind the prediction](docs/img/analysis.png)
 
 ### Ratings
 
 Fitted attack and defence for every club, sortable, next to their real league
 record. The two orders disagree, which is the time decay doing its job.
 
-<img src="docs/img/ratings.png" alt="Sortable table of fitted attack, defence and net ratings beside league records" width="100%">
+![Sortable table of fitted attack, defence and net ratings beside league records](docs/img/ratings.png)
 
-### Method, and on a phone
+### Any fixture, any screen
 
-The model, its assumptions and its limits are written into the page itself. The
-whole thing reflows to phone width.
+Pick any of the 306 pairings, in either theme, at any width.
 
 <p>
-<img src="docs/img/method.png" alt="The Method tab explaining the model" width="62%">
-<img src="docs/img/mobile.png" alt="The same page at phone width" width="34%">
+<img src="docs/img/fixture-dark.png" alt="Al Ahli versus Al Nassr in dark mode" width="63%">
+<img src="docs/img/mobile.png" alt="The same page at phone width" width="33%">
 </p>
 
 The page does **no modelling**. `export` precomputes all 306 club pairings with the

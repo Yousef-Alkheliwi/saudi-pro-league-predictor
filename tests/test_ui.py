@@ -295,3 +295,12 @@ class TestClubBadges(unittest.TestCase):
         css = (ROOT / "ui" / "src" / "styles.css").read_text()
         self.assertIn(".team.h .badge.hasimg", css)
         self.assertIn(".team.a .badge.hasimg", css)
+
+    def test_club_labels_use_the_distinguishing_word(self):
+        """Nearly every club is "Al something", so the first word names none of
+        them - both form rows once read "Form, Al"."""
+        app = (ROOT / "ui" / "src" / "app.js").read_text()
+        self.assertIn("function shortName", app)
+        self.assertIn("shortName(home.name)", app)
+        self.assertIn("shortName(away.name)", app)
+        self.assertNotIn('name.split(" ")[0]', app)
