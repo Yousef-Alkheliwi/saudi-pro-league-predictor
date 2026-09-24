@@ -57,6 +57,10 @@ class BacktestResult:
     mae_goals: float = 0.0
     mae_shots: Optional[float] = None
     mae_possession: Optional[float] = None
+    #: same errors for "always predict the league average", so the figures above
+    #: can be judged rather than just read
+    baseline_mae_shots: Optional[float] = None
+    baseline_mae_possession: Optional[float] = None
     baseline_log_loss: float = 0.0
     baseline_rps: float = 0.0
     calibration: List[Tuple[str, int, float, float]] = field(default_factory=list)
@@ -75,10 +79,17 @@ class BacktestResult:
              "  Brier (3-way)          %.4f" % self.brier,
              "  outcome accuracy       %.1f%%" % (100.0 * self.accuracy),
              "  MAE expected goals     %.3f goals/side" % self.mae_goals]
-        if self.mae_shots is not None:
-            L.append("  MAE shots              %.2f shots/side" % self.mae_shots)
-        if self.mae_possession is not None:
-            L.append("  MAE possession         %.2f pp" % self.mae_possession)
+        def _vs(label, got, base, unit):
+            if got is None:
+                return
+            if base:
+                L.append("  %-22s %.2f %s   baseline %.2f   %+.1f%%"
+                         % (label, got, unit, base,
+                            -100.0 * (got - base) / max(base, EPS)))
+            else:
+                L.append("  %-22s %.2f %s" % (label, got, unit))
+        _vs("MAE shots", self.mae_shots, self.baseline_mae_shots, "shots/side")
+        _vs("MAE possession", self.mae_possession, self.baseline_mae_possession, "pp")
         if self.calibration:
             L.append("")
             L.append("  calibration (predicted -> observed)")
@@ -136,6 +147,8 @@ def backtest(ds: Dataset, start: Optional[datetime] = None,
     b_ll = b_rps = 0.0
     shot_err: List[float] = []
     poss_err: List[float] = []
+    shot_base: List[float] = []
+    poss_base: List[float] = []
     cal_pairs: List[Tuple[float, int]] = []
 
     ratings: Optional[M.Ratings] = None
@@ -208,12 +221,20 @@ def backtest(ds: Dataset, start: Optional[datetime] = None,
                                           rates.lam_home, rates.lam_away, cfg=cfg)
                 ah = actual.get(match.home_id)
                 aa = actual.get(match.away_id)
+                league_shots = (aux.models["shots"].league_mean
+                                if aux.has("shots") else None)
                 if ah and ah.shots is not None:
                     shot_err.append(abs(tempo.shots_home - ah.shots))
+                    if league_shots:
+                        shot_base.append(abs(league_shots - ah.shots))
                 if aa and aa.shots is not None:
                     shot_err.append(abs(tempo.shots_away - aa.shots))
+                    if league_shots:
+                        shot_base.append(abs(league_shots - aa.shots))
                 if ah and ah.possession is not None:
                     poss_err.append(abs(tempo.possession_home - ah.possession))
+                    # the only sensible naive call for possession is an even split
+                    poss_base.append(abs(50.0 - ah.possession))
         res.n += 1
 
     if res.n == 0:
@@ -228,5 +249,7 @@ def backtest(ds: Dataset, start: Optional[datetime] = None,
     res.baseline_rps = b_rps / res.n
     res.mae_shots = float(np.mean(shot_err)) if shot_err else None
     res.mae_possession = float(np.mean(poss_err)) if poss_err else None
+    res.baseline_mae_shots = float(np.mean(shot_base)) if shot_base else None
+    res.baseline_mae_possession = float(np.mean(poss_base)) if poss_base else None
     res.calibration = _calibration(cal_pairs)
     return res

@@ -121,6 +121,9 @@ def cmd_predict(args) -> int:
     except LookupError as exc:
         print("team lookup failed: %s" % exc, file=sys.stderr)
         return 2
+    except ValueError as exc:
+        print("%s" % exc, file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(_as_dict(pred), indent=2))
     else:

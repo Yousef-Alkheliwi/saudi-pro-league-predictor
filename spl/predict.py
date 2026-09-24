@@ -88,6 +88,9 @@ class Predictor:
                 venue: Optional[str] = None,
                 neutral_venue: bool = False,
                 apply_injuries: bool = True) -> Prediction:
+        if home_id == away_id:
+            name = self.ds.teams.get(home_id, home_id)
+            raise ValueError("a club cannot play itself (%s)" % name)
         kickoff = kickoff or datetime.now(timezone.utc) + timedelta(days=3)
         feats = F.build_features(self.ds, home_id, away_id, kickoff,
                                  neutral_venue=neutral_venue)

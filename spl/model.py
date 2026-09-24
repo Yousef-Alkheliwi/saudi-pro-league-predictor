@@ -270,8 +270,13 @@ def goal_rates(ratings: Ratings, home_id: int, away_id: int,
             comp.update({"injury_home": inj_h, "injury_away": inj_a})
 
         if feats.h2h.meetings >= 3 and h2h_weight > 0:
-            # residual head-to-head bias, net of what the ratings already imply
-            implied = (lin_h - lin_a)
+            # Residual head-to-head bias, net of what the ratings already imply.
+            # Both sides of this comparison must be goal differences: `lin_h` and
+            # `lin_a` are LOG goal rates, so they have to be exponentiated first.
+            # Comparing a goal difference against a log-rate difference silently
+            # understates what the ratings imply, and does so most for the
+            # strongest favourites, biasing the adjustment in their favour.
+            implied = float(np.exp(lin_h) - np.exp(lin_a))
             observed = feats.h2h.weighted_gd
             resid = np.tanh((observed - implied) / 3.0)
             adj = h2h_weight * float(resid)

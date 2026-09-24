@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -565,3 +566,136 @@ class TestDataVintageHonesty(unittest.TestCase):
         pred = self._pred(7, injuries=True)
         self.assertTrue(pred.injuries_available)
         self.assertNotIn("no injury feed", render(pred))
+
+
+class TestHeadToHeadUnits(unittest.TestCase):
+    """The h2h term compares an observed goal difference against the one the
+    ratings imply. Both must be in goals: `lin_h`/`lin_a` are LOG rates, so
+    comparing them directly to a goal difference is incoherent."""
+
+    def _feats(self, weighted_gd, meetings=6):
+        f = Predictor(DS).predict(sorted(DS.teams)[0], sorted(DS.teams)[1]).features
+        f.h2h.meetings = meetings
+        f.h2h.weighted_gd = weighted_gd
+        return f
+
+    def test_no_adjustment_when_history_matches_the_model(self):
+        p = Predictor(DS)
+        home, away = sorted(DS.teams)[0], sorted(DS.teams)[1]
+        base = p.predict(home, away, apply_injuries=False)
+        implied_goals = base.lam_home - base.lam_away
+        feats = self._feats(implied_goals)
+        rates = M.goal_rates(p.ratings, home, away, feats, apply_injuries=False)
+        self.assertAlmostEqual(rates.components.get("h2h", 0.0), 0.0, delta=0.02)
+
+    def test_history_kinder_than_the_model_favours_the_home_side(self):
+        p = Predictor(DS)
+        home, away = sorted(DS.teams)[0], sorted(DS.teams)[1]
+        base = p.predict(home, away, apply_injuries=False)
+        implied = base.lam_home - base.lam_away
+        better = M.goal_rates(p.ratings, home, away, self._feats(implied + 2.0),
+                              apply_injuries=False)
+        worse = M.goal_rates(p.ratings, home, away, self._feats(implied - 2.0),
+                             apply_injuries=False)
+        self.assertGreater(better.components["h2h"], 0.0)
+        self.assertLess(worse.components["h2h"], 0.0)
+        self.assertGreater(better.lam_home, worse.lam_home)
+
+    def test_the_comparison_is_made_in_goals_not_log_rates(self):
+        """Regression: using `lin_h - lin_a` understates what the ratings imply,
+        and most for the biggest favourites."""
+        src = (Path(__file__).resolve().parent.parent / "spl" / "model.py").read_text()
+        block = src[src.index("if feats.h2h.meetings >= 3"):]
+        block = block[:block.index("lam_h = float")]
+        self.assertIn("np.exp(lin_h) - np.exp(lin_a)", block)
+        self.assertNotIn("implied = (lin_h - lin_a)", block)
+
+    def test_few_meetings_means_no_adjustment(self):
+        p = Predictor(DS)
+        home, away = sorted(DS.teams)[0], sorted(DS.teams)[1]
+        rates = M.goal_rates(p.ratings, home, away, self._feats(3.0, meetings=2),
+                             apply_injuries=False)
+        self.assertNotIn("h2h", rates.components)
+
+    def test_adjustment_is_bounded_by_its_weight(self):
+        p = Predictor(DS)
+        home, away = sorted(DS.teams)[0], sorted(DS.teams)[1]
+        for gd in (-9.0, -3.0, 0.0, 3.0, 9.0):
+            rates = M.goal_rates(p.ratings, home, away, self._feats(gd),
+                                 apply_injuries=False)
+            self.assertLessEqual(abs(rates.components["h2h"]), 0.12 + 1e-9)
+
+
+class TestSelfFixtureRejected(unittest.TestCase):
+    """A club cannot play itself. The web UI guarded this; the model did not,
+    so the CLI happily printed "Al Hilal win 41%" against "Al Hilal win 34%"."""
+
+    def test_predict_rejects_it(self):
+        p = Predictor(DS)
+        tid = sorted(DS.teams)[0]
+        with self.assertRaises(ValueError) as ctx:
+            p.predict(tid, tid)
+        self.assertIn("cannot play itself", str(ctx.exception))
+
+    def test_the_message_names_the_club(self):
+        p = Predictor(DS)
+        tid = sorted(DS.teams)[0]
+        with self.assertRaises(ValueError) as ctx:
+            p.predict(tid, tid)
+        self.assertIn(DS.teams[tid], str(ctx.exception))
+
+    def test_predict_by_name_rejects_two_spellings_of_one_club(self):
+        p = Predictor(DS)
+        name = DS.teams[sorted(DS.teams)[0]]
+        with self.assertRaises(ValueError):
+            p.predict_by_name(name, name)
+
+    def test_normal_fixtures_are_unaffected(self):
+        p = Predictor(DS)
+        ids = sorted(DS.teams)
+        self.assertIsNotNone(p.predict(ids[0], ids[1]))
+
+    def test_cli_exits_non_zero(self):
+        from spl import cli
+        args = cli.build_parser().parse_args(
+            ["predict", "--home", DS.teams[sorted(DS.teams)[0]],
+             "--away", DS.teams[sorted(DS.teams)[0]]])
+        import io
+        import contextlib
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with contextlib.redirect_stdout(io.StringIO()):
+                original = cli.Dataset.load
+                cli.Dataset.load = staticmethod(lambda *a, **k: DS)
+                try:
+                    code = cli.cmd_predict(args)
+                finally:
+                    cli.Dataset.load = original
+        self.assertEqual(code, 2)
+        self.assertIn("cannot play itself", err.getvalue())
+
+
+class TestBacktestBaselines(unittest.TestCase):
+    """MAE figures mean nothing without something to beat."""
+
+    result = None
+
+    @classmethod
+    def setUpClass(cls):
+        from spl.backtest import backtest
+        cls.result = backtest(DS, min_train_matches=300, refit_every=40,
+                              include_tempo=True)
+
+    def test_tempo_baselines_are_reported(self):
+        self.assertIsNotNone(self.result.baseline_mae_shots)
+        self.assertIsNotNone(self.result.baseline_mae_possession)
+
+    def test_the_models_beat_their_baselines(self):
+        self.assertLess(self.result.mae_shots, self.result.baseline_mae_shots)
+        self.assertLess(self.result.mae_possession,
+                        self.result.baseline_mae_possession)
+
+    def test_baselines_appear_in_the_report(self):
+        text = self.result.render()
+        self.assertIn("MAE shots", text)
+        self.assertIn("baseline", text)
