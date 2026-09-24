@@ -64,6 +64,10 @@ class Ratings:
     n_matches: int
     log_likelihood: float
     config: ModelConfig = field(default_factory=lambda: MODEL)
+    #: whether the optimiser reported success. A failed fit still returns
+    #: numbers, and without this they would be presented as settled.
+    converged: bool = True
+    fit_message: str = ""
 
     def strength(self, team_id: int) -> Tuple[float, float]:
         return self.attack.get(team_id, 0.0), self.defence.get(team_id, 0.0)
@@ -210,7 +214,10 @@ def fit(matches: Sequence[Match], as_of: Optional[datetime] = None,
     attack = attack - attack.mean()
     defence = defence - defence.mean()
 
+    message = res.message.decode() if isinstance(res.message, bytes) else str(res.message)
     return Ratings(
+        converged=bool(res.success),
+        fit_message=message,
         teams=list(td.teams),
         attack={t: float(attack[i]) for t, i in td.index.items()},
         defence={t: float(defence[i]) for t, i in td.index.items()},

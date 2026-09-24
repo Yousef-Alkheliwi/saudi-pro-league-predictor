@@ -169,6 +169,18 @@ def _data_warnings(pred: Prediction) -> List[str]:
         out.append("current-season data could be fetched.")
     if not pred.injuries_available:
         out.append("No injury data available - every squad is treated as fully fit.")
+    unrated = [name for tid, name in ((pred.home_id, pred.home_name),
+                                      (pred.away_id, pred.away_name))
+               if tid not in pred.ratings.attack]
+    if unrated:
+        out.append("%s ha%s no matches in the fitted ratings, so %s treated as"
+                   % (" and ".join(unrated), "ve" if len(unrated) > 1 else "s",
+                      "they are" if len(unrated) > 1 else "it is"))
+        out.append("exactly league-average. These numbers carry no information "
+                   "about that club.")
+    if not pred.ratings.converged:
+        out.append("The rating fit did not converge (%s). Treat every number "
+                   "below as unreliable." % pred.ratings.fit_message)
     return out
 
 

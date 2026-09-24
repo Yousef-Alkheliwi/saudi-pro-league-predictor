@@ -725,3 +725,52 @@ class TestScoreMatrixTruncation(unittest.TestCase):
         for lam, mu in ((5.5, 0.4), (0.3, 4.9), (3.0, 3.0)):
             mat = M.score_matrix(lam, mu, -0.1)
             self.assertAlmostEqual(mat.sum(), 1.0, places=9)
+
+
+class TestFitHonesty(unittest.TestCase):
+    """A fit that fails, or a club the fit never saw, must not be presented
+    with the same confidence as a good one."""
+
+    def test_convergence_is_recorded(self):
+        r = M.fit(DS.matches)
+        self.assertTrue(r.converged)
+        self.assertTrue(r.fit_message)
+
+    def test_a_failed_fit_is_flagged_in_the_report(self):
+        from spl.predict import _data_warnings
+        p = Predictor(DS)
+        pred = p.predict(sorted(DS.teams)[0], sorted(DS.teams)[1])
+        pred.ratings.converged = False
+        pred.ratings.fit_message = "ABNORMAL_TERMINATION"
+        warnings = _data_warnings(pred)
+        self.assertTrue(any("did not converge" in w for w in warnings))
+        self.assertIn("ABNORMAL_TERMINATION", render(pred))
+
+    def test_an_unrated_club_is_flagged(self):
+        """It is silently scored as exactly league-average, which looks like a
+        real prediction unless the report says otherwise."""
+        from spl.predict import _data_warnings
+        ds = Dataset(league_id=1, fetched_at="now", teams=dict(DS.teams),
+                     matches=list(DS.matches), stats=list(DS.stats))
+        ghost = 987654
+        ds.teams[ghost] = "Unknown FC"
+        p = Predictor(ds)
+        pred = p.predict(ghost, sorted(DS.teams)[0])
+        self.assertNotIn(ghost, p.ratings.attack)
+        self.assertTrue(any("no matches in the fitted ratings" in w
+                            for w in _data_warnings(pred)))
+        self.assertIn("Unknown FC", render(pred))
+
+    def test_a_rated_club_is_not_flagged(self):
+        from spl.predict import _data_warnings
+        p = Predictor(DS)
+        pred = p.predict(sorted(DS.teams)[0], sorted(DS.teams)[1])
+        self.assertFalse(any("fitted ratings" in w for w in _data_warnings(pred)))
+
+    def test_an_unrated_club_still_produces_a_valid_distribution(self):
+        ds = Dataset(league_id=1, fetched_at="now", teams=dict(DS.teams),
+                     matches=list(DS.matches), stats=list(DS.stats))
+        ds.teams[987654] = "Unknown FC"
+        pred = Predictor(ds).predict(987654, sorted(DS.teams)[0])
+        total = pred.markets["home"] + pred.markets["draw"] + pred.markets["away"]
+        self.assertAlmostEqual(total, 1.0, places=6)

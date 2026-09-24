@@ -585,3 +585,78 @@ class TestPlanRestriction(unittest.TestCase):
     def test_plan_restricted_is_an_api_error(self):
         from spl.providers import PlanRestricted
         self.assertTrue(issubclass(PlanRestricted, ApiFootballError))
+
+
+class TestRoundTripCompleteness(unittest.TestCase):
+    """Introspects the dataclasses rather than listing fields, so adding a
+    field without serialising it fails here instead of silently losing data."""
+
+    @classmethod
+    def setUpClass(cls):
+        import dataclasses
+        from spl.data import Dataset as DS, Injury, Player, TeamStats
+        from tests.synthetic import make_dataset
+        cls.dataclasses = dataclasses
+        ds, _ = make_dataset(seed=2)
+        ds.logos = {sorted(ds.teams)[0]: "data:image/png;base64,AAAA"}
+        ds.source = "test source"
+        ds.plan_limited = True
+        ds.newest_available_season = 2024
+        ds.injuries.append(Injury(sorted(ds.teams)[0], 1, "P", "Missing Fixture", "x"))
+        cls.original = ds
+        cls.tmp = tempfile.TemporaryDirectory()
+        path = Path(cls.tmp.name) / "ds.json"
+        ds.save(path)
+        cls.blob = json.loads(path.read_text())
+        cls.restored = DS.load(path)
+        cls.row_types = {"matches": ds.matches, "other_matches": ds.other_matches,
+                         "stats": ds.stats, "injuries": ds.injuries,
+                         "players": ds.players}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_every_dataset_field_is_written(self):
+        names = [f.name for f in self.dataclasses.fields(self.original)]
+        self.assertEqual([n for n in names if n not in self.blob], [])
+
+    def test_no_dataset_field_changes_on_the_way_back(self):
+        changed = []
+        for f in self.dataclasses.fields(self.original):
+            a = getattr(self.original, f.name)
+            b = getattr(self.restored, f.name)
+            if isinstance(a, (list, dict)):
+                if len(a) != len(b):
+                    changed.append(f.name)
+            elif a != b:
+                changed.append(f.name)
+        self.assertEqual(changed, [])
+
+    def test_every_record_field_is_written(self):
+        for key, rows in self.row_types.items():
+            if not rows:
+                continue
+            names = [f.name for f in self.dataclasses.fields(rows[0])]
+            written = (self.blob.get(key) or [{}])[0]
+            self.assertEqual([n for n in names if n not in written], [],
+                             "%s loses fields" % key)
+
+    def test_scalar_values_survive_exactly(self):
+        self.assertEqual(self.restored.source, "test source")
+        self.assertTrue(self.restored.plan_limited)
+        self.assertEqual(self.restored.newest_available_season, 2024)
+        self.assertEqual(self.restored.logos, self.original.logos)
+
+    def test_an_older_snapshot_without_the_newer_fields_still_loads(self):
+        from spl.data import Dataset as DS
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "old.json"
+            legacy = {k: self.blob[k] for k in
+                      ("league_id", "fetched_at", "teams", "matches", "stats",
+                       "injuries", "players")}
+            path.write_text(json.dumps(legacy))
+            old = DS.load(path)
+            self.assertEqual(old.logos, {})
+            self.assertFalse(old.plan_limited)
+            self.assertEqual(old.other_matches, [])
