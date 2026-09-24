@@ -699,3 +699,29 @@ class TestBacktestBaselines(unittest.TestCase):
         text = self.result.render()
         self.assertIn("MAE shots", text)
         self.assertIn("baseline", text)
+
+
+class TestScoreMatrixTruncation(unittest.TestCase):
+    """The matrix is truncated and renormalised, so the cap has to be high
+    enough that the lost tail does not move the numbers read off it."""
+
+    def test_expected_goals_match_the_rate_that_generated_them(self):
+        for lam in (0.8, 1.5, 2.5, 3.5, 4.5, 5.5):
+            mat = M.score_matrix(lam, 1.3, -0.1)
+            idx = np.arange(mat.shape[0])
+            got = float((mat.sum(axis=1) * idx).sum())
+            self.assertAlmostEqual(got, lam, delta=0.002, msg="lambda=%.1f" % lam)
+
+    def test_a_low_cap_visibly_biases_high_scoring_fixtures(self):
+        idx10 = np.arange(11)
+        mat10 = M.score_matrix(5.0, 1.3, -0.1, max_goals=10)
+        err10 = abs(float((mat10.sum(axis=1) * idx10).sum()) - 5.0)
+        self.assertGreater(err10, 0.05)          # the bug, pinned
+        mat = M.score_matrix(5.0, 1.3, -0.1)     # the configured cap
+        idx = np.arange(mat.shape[0])
+        self.assertLess(abs(float((mat.sum(axis=1) * idx).sum()) - 5.0), 0.005)
+
+    def test_the_matrix_is_still_a_distribution(self):
+        for lam, mu in ((5.5, 0.4), (0.3, 4.9), (3.0, 3.0)):
+            mat = M.score_matrix(lam, mu, -0.1)
+            self.assertAlmostEqual(mat.sum(), 1.0, places=9)

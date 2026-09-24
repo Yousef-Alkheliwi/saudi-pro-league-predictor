@@ -23,6 +23,10 @@ from .predict import Predictor, Prediction, _data_warnings
 #: goals per side kept in the exported scoreline grid
 GRID = 7
 
+#: how far past its kickoff an unplayed fixture may be before it is treated as
+#: postponed rather than upcoming
+STALE_FIXTURE_HOURS = 6
+
 
 def _grid(pred: Prediction) -> List[List[float]]:
     """The scoreline heat-map, recomputed from the prediction's own rates."""
@@ -137,7 +141,17 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
     # rather than making the reader guess an opponent.
     club_set = set(club_ids)
     fixtures = []
+    # A postponed or abandoned match stays "not started" forever. The list is
+    # sorted ascending, so without this cutoff the oldest such ghost would sit
+    # at the head of "Upcoming", become the page's default fixture, and be
+    # reported as the next match for both clubs involved. The few hours of
+    # grace keep a match that has just kicked off from vanishing.
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=STALE_FIXTURE_HOURS)
+    dropped = 0
     for m in ds.upcoming_matches:
+        if m.dt < cutoff:
+            dropped += 1
+            continue
         if m.home_id in club_set and m.away_id in club_set:
             fixtures.append({"home": m.home_id, "away": m.away_id,
                              "kickoff": m.dt.isoformat(),
@@ -145,7 +159,9 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
                              "day": m.dt.strftime("%d %b"),
                              "venue": m.venue})
     fixtures.sort(key=lambda f: f["kickoff"])
-    log("%d scheduled fixtures exported" % len(fixtures))
+    log("%d scheduled fixtures exported%s"
+        % (len(fixtures),
+           ", %d stale unplayed fixture(s) skipped" % dropped if dropped else ""))
 
     sample = predictor.predict(club_ids[0], club_ids[1])
     newest = played[-1] if played else None

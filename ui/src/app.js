@@ -428,8 +428,13 @@ function render(){
   showFixtureStrip(key);
 
   buildGrid(p, home.name, away.name);
+  var shown = p.grid.reduce(function(t, row){
+    return t + row.reduce(function(u, v){ return u + v; }, 0);
+  }, 0);
   $("axnote").innerHTML = "&larr; " + home.name + " goals down  &middot;  "
-    + away.name + " goals across &rarr;";
+    + away.name + " goals across &rarr;"
+    + '<br><span style="opacity:.75">' + pct(shown)
+    + " of all outcomes shown; the model runs past six a side</span>";
   buildMarkets(p, home.name, away.name);
   buildCompare(p, home.name, away.name);
   buildWhy(p, home, away);

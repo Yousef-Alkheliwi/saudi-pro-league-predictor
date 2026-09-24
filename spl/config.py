@@ -92,8 +92,14 @@ class ModelConfig:
     #: ridge strength pulling attack/defence ratings toward the league average.
     #: Keeps newly promoted teams with few matches from being wildly rated.
     ridge: float = 0.35
-    #: max goals per side in the scoreline matrix
-    max_goals: int = 10
+    #: Max goals per side in the scoreline matrix. The distribution is truncated
+    #: here and renormalised, which shifts probability mass off the tail and
+    #: biases expected goals downward - worst for the highest-scoring fixtures,
+    #: exactly where the model is most confident. At 10 that cost 0.024 goals at
+    #: a rate of 4.1 and 0.092 at 5.0; at 15 it is under 0.001 for any rate this
+    #: league produces. 18 keeps that guarantee well past any rate this model
+    #: emits in practice, for a matrix that is still trivially small.
+    max_goals: int = 18
     #: cap on rest days before the effect is assumed to plateau
     rest_days_cap: int = 10
     #: matches in the trailing window used for the congestion covariate

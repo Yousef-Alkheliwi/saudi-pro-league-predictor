@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spl.data import Dataset
 from spl.export import build_payload
 from spl.predict import Predictor
 from tests.synthetic import make_dataset
@@ -304,3 +305,66 @@ class TestClubBadges(unittest.TestCase):
         self.assertIn("shortName(home.name)", app)
         self.assertIn("shortName(away.name)", app)
         self.assertNotIn('name.split(" ")[0]', app)
+
+
+class TestStaleFixturesExcluded(unittest.TestCase):
+    """A postponed match stays 'not started' indefinitely. Fixtures are sorted
+    ascending, so an unfiltered ghost would head the Upcoming list, become the
+    page's default and be reported as both clubs' next match."""
+
+    def _payload(self, offsets_hours):
+        from datetime import datetime, timedelta, timezone
+        from spl.data import Match
+        from spl.export import build_payload
+        ds = Dataset(league_id=1, fetched_at="now", teams=dict(DS.teams),
+                     matches=list(DS.matches), stats=list(DS.stats),
+                     players=list(DS.players))
+        ids = sorted(DS.teams)
+        now = datetime.now(timezone.utc)
+        fid = 900000
+        for k, hrs in enumerate(offsets_hours):
+            ds.matches.append(Match(
+                fixture_id=fid + k, season=2026,
+                kickoff=(now + timedelta(hours=hrs)).isoformat(),
+                home_id=ids[2 * k], away_id=ids[2 * k + 1],
+                home_name=DS.teams[ids[2 * k]], away_name=DS.teams[ids[2 * k + 1]],
+                status="NS"))
+        return build_payload(ds, log=lambda *a: None)
+
+    def test_a_long_postponed_fixture_is_dropped(self):
+        payload = self._payload([-24 * 30])
+        self.assertEqual([f for f in payload["fixtures"]
+                          if f["home"] == sorted(DS.teams)[0]], [])
+
+    def test_a_future_fixture_is_kept(self):
+        payload = self._payload([48])
+        self.assertTrue([f for f in payload["fixtures"]
+                         if f["home"] == sorted(DS.teams)[0]])
+
+    def test_a_match_that_just_kicked_off_is_kept(self):
+        payload = self._payload([-1])
+        self.assertTrue([f for f in payload["fixtures"]
+                         if f["home"] == sorted(DS.teams)[0]])
+
+    def test_a_ghost_never_heads_the_list(self):
+        from datetime import datetime, timezone
+        payload = self._payload([-24 * 14, 72])
+        if payload["fixtures"]:
+            first = payload["fixtures"][0]["kickoff"]
+            self.assertGreater(first, datetime.now(timezone.utc).isoformat())
+
+    def test_grid_caption_does_not_overclaim(self):
+        """The display grid is 7x7 while the model runs to 18 goals a side, so
+        it cannot honestly be called every score the model allows."""
+        page = (ROOT / "ui" / "src" / "page.html").read_text()
+        self.assertNotIn("Every exact score the model gives a chance to", page)
+        app = (ROOT / "ui" / "src" / "app.js").read_text()
+        self.assertIn("of all outcomes shown", app)
+
+    def test_peak_cell_ring_is_not_the_ramp_hue(self):
+        """The ramp is green; an accent-green ring on its darkest step is
+        invisible, and the caption points the reader at it."""
+        css = (ROOT / "ui" / "src" / "styles.css").read_text()
+        rule = re.search(r"\.sg-cell\.peak\{([^}]*)\}", css).group(1)
+        self.assertNotIn("--accent", rule)
+        self.assertIn("--ink", rule)
