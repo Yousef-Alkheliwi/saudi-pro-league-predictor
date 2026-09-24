@@ -148,7 +148,11 @@ def season_of(dt: datetime) -> int:
 
 
 def _parse_dt(text: str) -> datetime:
-    raw = (text or "").strip()
+    if not isinstance(text, str):
+        raise ValueError("kickoff is not a string: %r" % (text,))
+    raw = text.strip()
+    if not raw:
+        raise ValueError("empty kickoff")
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     try:
@@ -169,14 +173,30 @@ def _num(value) -> Optional[float]:
         return None
 
 
+def _display_name(side: dict, fallback: int) -> str:
+    team = side.get("team")
+    name = team.get("displayName") if isinstance(team, dict) else None
+    return name if isinstance(name, str) and name else str(fallback)
+
+
 def parse_event(event: dict) -> Optional[Tuple[Match, List[TeamStats]]]:
-    """One ESPN event -> a Match plus whatever box score came with it."""
+    """One ESPN event -> a Match plus whatever box score came with it.
+
+    Every field here comes from a third-party feed, so nothing about its shape
+    is guaranteed. Anything unrecognisable yields None rather than raising.
+    """
+    if not isinstance(event, dict) or not event.get("id"):
+        return None
     comps = event.get("competitions") or []
+    if not isinstance(comps, list):
+        return None
     if not comps or not event.get("id"):
         return None
-    comp = comps[0]
+    comp = comps[0] if isinstance(comps[0], dict) else {}
     sides = comp.get("competitors") or []
-    if len(sides) != 2:
+    if not isinstance(sides, list) or len(sides) != 2:
+        return None
+    if not all(isinstance(x, dict) for x in sides):
         return None
 
     home = next((s for s in sides if s.get("homeAway") == "home"), None)
@@ -185,7 +205,9 @@ def parse_event(event: dict) -> Optional[Tuple[Match, List[TeamStats]]]:
         home, away = sides[0], sides[1]
 
     def team_id(side) -> Optional[int]:
-        raw = (side.get("team") or {}).get("id") or side.get("id")
+        team = side.get("team")
+        team = team if isinstance(team, dict) else {}
+        raw = team.get("id") or side.get("id")
         try:
             return int(raw)
         except (TypeError, ValueError):
@@ -195,7 +217,10 @@ def parse_event(event: dict) -> Optional[Tuple[Match, List[TeamStats]]]:
     if hid is None or aid is None or hid == aid:
         return None
 
-    status = ((event.get("status") or comp.get("status") or {}).get("type") or {})
+    raw_status = event.get("status") or comp.get("status") or {}
+    raw_status = raw_status if isinstance(raw_status, dict) else {}
+    status = raw_status.get("type")
+    status = status if isinstance(status, dict) else {}
     completed = bool(status.get("completed"))
     short = status.get("shortDetail") or status.get("description") or ""
     hg = _num(home.get("score"))
@@ -203,20 +228,29 @@ def parse_event(event: dict) -> Optional[Tuple[Match, List[TeamStats]]]:
     if not completed or hg is None or ag is None:
         hg = ag = None
 
-    dt = _parse_dt(event.get("date") or comp.get("date") or "")
-    fixture_id = int(event["id"])
+    try:
+        # a fixture we cannot place in time is no use: it drives rest days,
+        # season labelling and the whole upcoming/played split
+        dt = _parse_dt(event.get("date") or comp.get("date") or "")
+    except (ValueError, TypeError):
+        return None
+    try:
+        fixture_id = int(event["id"])
+    except (TypeError, ValueError):
+        return None                     # an id we cannot key on is unusable
     match = Match(
         fixture_id=fixture_id,
         season=season_of(dt),
         kickoff=dt.isoformat(),
         home_id=hid, away_id=aid,
-        home_name=(home.get("team") or {}).get("displayName") or str(hid),
-        away_name=(away.get("team") or {}).get("displayName") or str(aid),
+        home_name=_display_name(home, hid),
+        away_name=_display_name(away, aid),
         # the rest of the codebase keys "played" off these codes
         status="FT" if completed else "NS",
         home_goals=int(hg) if hg is not None else None,
         away_goals=int(ag) if ag is not None else None,
-        venue=((comp.get("venue") or {}).get("fullName")),
+        venue=(comp.get("venue") or {}).get("fullName")
+              if isinstance(comp.get("venue"), dict) else None,
         round=(event.get("week") or {}).get("text") if isinstance(event.get("week"), dict) else None,
         league_id=None, league_name="Saudi Pro League",
     )
@@ -224,12 +258,17 @@ def parse_event(event: dict) -> Optional[Tuple[Match, List[TeamStats]]]:
     stats: List[TeamStats] = []
     for side, tid in ((home, hid), (away, aid)):
         raw = side.get("statistics") or []
-        if not raw:
+        if not raw or not isinstance(raw, list):
             continue
         rec = TeamStats(fixture_id=fixture_id, team_id=tid)
         found = False
         for item in raw:
-            field = STAT_MAP.get(item.get("name"))
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str):
+                continue
+            field = STAT_MAP.get(name)
             if field:
                 val = _num(item.get("displayValue", item.get("value")))
                 if val is not None:
@@ -242,14 +281,22 @@ def parse_event(event: dict) -> Optional[Tuple[Match, List[TeamStats]]]:
 
 def parse_injuries(payload: dict) -> List[Injury]:
     out: List[Injury] = []
-    for block in payload.get("injuries") or []:
-        team = block.get("team") or {}
+    blocks = payload.get("injuries") if isinstance(payload, dict) else None
+    for block in (blocks if isinstance(blocks, (list, tuple)) else []):
+        if not isinstance(block, dict):
+            continue
+        team = block.get("team")
+        team = team if isinstance(team, dict) else {}
         try:
             tid = int(team.get("id"))
         except (TypeError, ValueError):
             continue
-        for item in block.get("injuries") or []:
-            athlete = item.get("athlete") or {}
+        entries = block.get("injuries")
+        for item in (entries if isinstance(entries, (list, tuple)) else []):
+            if not isinstance(item, dict):
+                continue
+            athlete = item.get("athlete")
+            athlete = athlete if isinstance(athlete, dict) else {}
             out.append(Injury(
                 team_id=tid,
                 player_id=int(athlete["id"]) if str(athlete.get("id", "")).isdigit() else None,
@@ -299,7 +346,11 @@ def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
                 log("  %04d-%02d unavailable: %s" % (year, month, exc))
                 continue
             for event in payload.get("events") or []:
-                parsed = parse_event(event)
+                try:
+                    parsed = parse_event(event)
+                except Exception as exc:          # pragma: no cover - defensive
+                    log("  skipped an unparseable event: %s" % exc)
+                    continue
                 if parsed is None:
                     continue
                 match, stats = parsed

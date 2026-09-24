@@ -774,3 +774,83 @@ class TestFitHonesty(unittest.TestCase):
         pred = Predictor(ds).predict(987654, sorted(DS.teams)[0])
         total = pred.markets["home"] + pred.markets["draw"] + pred.markets["away"]
         self.assertAlmostEqual(total, 1.0, places=6)
+
+
+class TestBoundedParameters(unittest.TestCase):
+    """L-BFGS-B reports success even when it has pressed a parameter flat
+    against its bound. Such a value is clamped, not estimated."""
+
+    @staticmethod
+    def _league(score_fn, n_matches=60, seed=3):
+        import random
+        rng = random.Random(seed)
+        start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        out = []
+        for i in range(n_matches):
+            h, a = rng.sample(range(6), 2)
+            hg, ag = score_fn(rng, i)
+            out.append(Match(i, 2025, (start + timedelta(days=i)).isoformat(),
+                             h, a, "T%d" % h, "T%d" % a, "FT", hg, ag))
+        return out
+
+    def test_a_healthy_fit_reports_nothing_pinned(self):
+        self.assertEqual(M.fit(DS.matches).at_bounds, [])
+
+    def test_every_match_won_five_nil_at_home_pins_home_advantage(self):
+        r = M.fit(self._league(lambda rng, i: (5, 0)))
+        self.assertIn("home advantage", r.at_bounds)
+
+    def test_a_goalless_league_pins_the_base_rate(self):
+        r = M.fit(self._league(lambda rng, i: (0, 0)))
+        self.assertIn("base", r.at_bounds)
+
+    def test_pinning_is_surfaced_in_the_report(self):
+        from spl.predict import _data_warnings
+        p = Predictor(DS)
+        pred = p.predict(sorted(DS.teams)[0], sorted(DS.teams)[1])
+        pred.ratings.at_bounds = ["home advantage"]
+        self.assertTrue(any("clamped rather than" in w
+                            for w in _data_warnings(pred)))
+        self.assertIn("home advantage", render(pred))
+
+    def test_pathological_leagues_still_produce_valid_distributions(self):
+        import numpy as np
+        for fn in (lambda rng, i: (0, 0),
+                   lambda rng, i: (5, 0),
+                   lambda rng, i: (rng.randint(8, 15), rng.randint(8, 15)),
+                   lambda rng, i: (rng.randint(0, 3),) * 2):
+            r = M.fit(self._league(fn))
+            mat = M.score_matrix(1.5, 1.2, r.rho)
+            self.assertAlmostEqual(mat.sum(), 1.0, places=9)
+            self.assertTrue(np.isfinite(list(r.attack.values())).all())
+
+
+class TestScoreMatrixFuzz(unittest.TestCase):
+    """Random and degenerate rates must not break the distribution."""
+
+    def test_random_rates_keep_every_invariant(self):
+        import random
+        import numpy as np
+        rng = random.Random(11)
+        for _ in range(400):
+            lam, mu = rng.uniform(1e-6, 8.0), rng.uniform(1e-6, 8.0)
+            rho = rng.uniform(-0.18, 0.18)
+            mat = M.score_matrix(lam, mu, rho)
+            self.assertTrue(np.isfinite(mat).all())
+            self.assertTrue((mat >= 0).all())
+            self.assertAlmostEqual(mat.sum(), 1.0, places=6)
+            o = M.outcome_probabilities(mat)
+            self.assertAlmostEqual(sum(o.values()), 1.0, places=6)
+
+    def test_degenerate_rates(self):
+        for lam, mu in ((0.0, 0.0), (1e-12, 5.0), (20.1, 1e-12)):
+            mat = M.score_matrix(lam, mu, -0.1)
+            self.assertAlmostEqual(mat.sum(), 1.0, places=6)
+
+    def test_a_matrix_too_small_for_the_correction_does_not_crash(self):
+        """The correction touches cells [0,1], [1,0] and [1,1], which a 1x1
+        matrix does not have."""
+        for cap in (0, 1, 2):
+            mat = M.score_matrix(2.0, 1.5, -0.1, max_goals=cap)
+            self.assertEqual(mat.shape, (cap + 1, cap + 1))
+            self.assertAlmostEqual(mat.sum(), 1.0, places=9)

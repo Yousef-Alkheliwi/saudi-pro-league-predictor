@@ -309,3 +309,93 @@ class TestBadges(unittest.TestCase):
     def test_shrink_returns_input_when_it_cannot_resize(self):
         raw = b"not really a png"
         self.assertIsInstance(E._shrink_png(raw), bytes)
+
+
+class TestMalformedFeed(unittest.TestCase):
+    """Every field here comes from a third-party feed. A malformed row must be
+    skipped, never raise - `fetch_dataset` parses events in a loop, so one bad
+    row raising would have cost the whole snapshot."""
+
+    MUTATIONS = (object(), None, "", 0, [], {}, "xxx", -1, 1e300, "\u0000",
+                 True, [[]], {"a": 1}, "2026-13-45T99:99Z")
+
+    @staticmethod
+    def _paths(obj, prefix=()):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                yield prefix + (k,)
+                for p in TestMalformedFeed._paths(v, prefix + (k,)):
+                    yield p
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                yield prefix + (i,)
+                for p in TestMalformedFeed._paths(v, prefix + (i,)):
+                    yield p
+
+    def test_no_single_field_mutation_can_raise(self):
+        import copy
+        deleted = self.MUTATIONS[0]
+        checked = 0
+        for path in list(self._paths(EVENT)):
+            for val in self.MUTATIONS:
+                payload = copy.deepcopy(EVENT)
+                cur = payload
+                try:
+                    for k in path[:-1]:
+                        cur = cur[k]
+                    if val is deleted:
+                        cur.pop(path[-1], None) if isinstance(cur, dict) \
+                            else cur.pop(path[-1])
+                    else:
+                        cur[path[-1]] = val
+                except Exception:
+                    continue
+                checked += 1
+                try:
+                    E.parse_event(payload)
+                except Exception as exc:
+                    self.fail("%s=%r raised %s: %s"
+                              % (".".join(map(str, path)), val,
+                                 type(exc).__name__, exc))
+        self.assertGreater(checked, 200)
+
+    def test_a_valid_event_is_unaffected_by_the_hardening(self):
+        match, stats = E.parse_event(EVENT)
+        self.assertEqual((match.home_goals, match.away_goals), (4, 2))
+        self.assertEqual(len(stats), 2)
+
+    def test_an_unusable_id_is_dropped_not_guessed(self):
+        import copy
+        for value in ("not-a-number", None, [], {}):
+            payload = copy.deepcopy(EVENT)
+            payload["id"] = value
+            self.assertIsNone(E.parse_event(payload), "id=%r" % (value,))
+
+    def test_an_unusable_date_is_dropped_only_when_both_are_bad(self):
+        """An empty event date falls back to the competition's, by design."""
+        import copy
+        payload = copy.deepcopy(EVENT)
+        payload["date"] = ""
+        self.assertIsNotNone(E.parse_event(payload))     # fallback still works
+        payload["competitions"][0]["date"] = ""
+        self.assertIsNone(E.parse_event(payload))        # nothing left to use
+        payload["date"] = "nonsense"
+        self.assertIsNone(E.parse_event(payload))
+
+    def test_scalar_where_a_list_belongs(self):
+        import copy
+        for path, val in ((("competitions",), 5),
+                          (("competitions", 0, "competitors"), "x"),
+                          (("competitions", 0, "competitors", 0, "statistics"), 7)):
+            payload = copy.deepcopy(EVENT)
+            cur = payload
+            for k in path[:-1]:
+                cur = cur[k]
+            cur[path[-1]] = val
+            E.parse_event(payload)      # must not raise
+
+    def test_injuries_tolerate_junk(self):
+        for junk in (None, {}, {"injuries": None}, {"injuries": 5},
+                     {"injuries": [None]}, {"injuries": [{"team": "x"}]},
+                     {"injuries": [{"team": {"id": "1"}, "injuries": 3}]}):
+            self.assertIsInstance(E.parse_injuries(junk), list)

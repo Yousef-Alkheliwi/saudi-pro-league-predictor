@@ -178,6 +178,13 @@ def _data_warnings(pred: Prediction) -> List[str]:
                       "they are" if len(unrated) > 1 else "it is"))
         out.append("exactly league-average. These numbers carry no information "
                    "about that club.")
+    if pred.ratings.at_bounds:
+        out.append("The fit pushed %s onto %s limit, so %s clamped rather than "
+                   % (", ".join(pred.ratings.at_bounds),
+                      "their" if len(pred.ratings.at_bounds) > 1 else "its",
+                      "they are" if len(pred.ratings.at_bounds) > 1 else "it is"))
+        out.append("estimated - the data wanted to go further. Usually a sign of "
+                   "too few matches.")
     if not pred.ratings.converged:
         out.append("The rating fit did not converge (%s). Treat every number "
                    "below as unreliable." % pred.ratings.fit_message)

@@ -322,15 +322,20 @@ _STAT_KEYS = {
 
 # --------------------------------------------------------------------------- fetching
 def parse_fixture(row: dict) -> Optional[Match]:
-    fixture = row.get("fixture") or {}
-    teams = row.get("teams") or {}
-    goals = row.get("goals") or {}
-    league = row.get("league") or {}
-    home, away = teams.get("home") or {}, teams.get("away") or {}
+    # the payload is third-party; treat every level as untrusted
+    if not isinstance(row, dict):
+        return None
+    def _d(value):
+        return value if isinstance(value, dict) else {}
+    fixture = _d(row.get("fixture"))
+    teams = _d(row.get("teams"))
+    goals = _d(row.get("goals"))
+    league = _d(row.get("league"))
+    home, away = _d(teams.get("home")), _d(teams.get("away"))
     if not fixture.get("id") or not home.get("id") or not away.get("id"):
         return None
-    status = ((fixture.get("status") or {}).get("short")) or "NS"
-    venue = (fixture.get("venue") or {}).get("name")
+    status = _d(fixture.get("status")).get("short") or "NS"
+    venue = _d(fixture.get("venue")).get("name")
     return Match(
         fixture_id=int(fixture["id"]),
         season=int(league.get("season") or 0),
@@ -351,12 +356,17 @@ def parse_fixture(row: dict) -> Optional[Match]:
 
 def parse_statistics(fixture_id: int, rows: Iterable[dict]) -> List[TeamStats]:
     out: List[TeamStats] = []
-    for row in rows or []:
-        team = (row.get("team") or {}).get("id")
+    for row in (rows if isinstance(rows, (list, tuple)) else []):
+        if not isinstance(row, dict):
+            continue
+        team = (row.get("team") or {}).get("id") if isinstance(row.get("team"), dict) else None
         if not team:
             continue
         rec = TeamStats(fixture_id=fixture_id, team_id=int(team))
-        for item in row.get("statistics") or []:
+        items = row.get("statistics")
+        for item in (items if isinstance(items, (list, tuple)) else []):
+            if not isinstance(item, dict):
+                continue
             key = _STAT_KEYS.get(str(item.get("type") or "").strip().lower())
             if key:
                 setattr(rec, key, _stat_value(item.get("value")))
@@ -367,9 +377,11 @@ def parse_statistics(fixture_id: int, rows: Iterable[dict]) -> List[TeamStats]:
 def parse_injuries(rows: Iterable[dict]) -> List[Injury]:
     out: List[Injury] = []
     seen = set()
-    for row in rows or []:
-        team = (row.get("team") or {}).get("id")
-        player = row.get("player") or {}
+    for row in (rows if isinstance(rows, (list, tuple)) else []):
+        if not isinstance(row, dict):
+            continue
+        team = (row.get("team") or {}).get("id") if isinstance(row.get("team"), dict) else None
+        player = row.get("player") if isinstance(row.get("player"), dict) else {}
         if not team:
             continue
         pid = player.get("id")
@@ -391,20 +403,25 @@ def parse_injuries(rows: Iterable[dict]) -> List[Injury]:
 
 def parse_players(team_id: int, rows: Iterable[dict]) -> List[Player]:
     out: List[Player] = []
-    for row in rows or []:
-        player = row.get("player") or {}
+    for row in (rows if isinstance(rows, (list, tuple)) else []):
+        if not isinstance(row, dict):
+            continue
+        player = row.get("player") if isinstance(row.get("player"), dict) else {}
         pid = player.get("id")
         if not pid:
             continue
         minutes = appearances = goals = assists = 0.0
         rating: Optional[float] = None
         position = None
-        for block in row.get("statistics") or []:
-            games = block.get("games") or {}
+        blocks = row.get("statistics")
+        for block in (blocks if isinstance(blocks, (list, tuple)) else []):
+            if not isinstance(block, dict):
+                continue
+            games = block.get("games") if isinstance(block.get("games"), dict) else {}
             minutes += float(games.get("minutes") or 0)
             appearances += float(games.get("appearences") or games.get("appearances") or 0)
             position = position or games.get("position")
-            g = block.get("goals") or {}
+            g = block.get("goals") if isinstance(block.get("goals"), dict) else {}
             goals += float(g.get("total") or 0)
             assists += float(g.get("assists") or 0)
             try:

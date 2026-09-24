@@ -68,6 +68,10 @@ class Ratings:
     #: numbers, and without this they would be presented as settled.
     converged: bool = True
     fit_message: str = ""
+    #: parameters the optimiser pushed onto their bound. L-BFGS-B still reports
+    #: success in that case, but such a value is clamped rather than estimated -
+    #: the data wanted to go further and the bound stopped it.
+    at_bounds: List[str] = field(default_factory=list)
 
     def strength(self, team_id: int) -> Tuple[float, float]:
         return self.attack.get(team_id, 0.0), self.defence.get(team_id, 0.0)
@@ -215,7 +219,18 @@ def fit(matches: Sequence[Match], as_of: Optional[datetime] = None,
     defence = defence - defence.mean()
 
     message = res.message.decode() if isinstance(res.message, bytes) else str(res.message)
+
+    named = (("base", base, bounds[0]), ("home advantage", home_adv, bounds[1]),
+             ("rest-days coefficient", b_rest, bounds[3]),
+             ("congestion coefficient", b_cong, bounds[4]))
+    pinned = [nm for nm, val, (lo, hi) in named
+              if abs(val - lo) < 1e-6 or abs(val - hi) < 1e-6]
+    # rho is squashed through tanh, so it saturates just short of its limit
+    if abs(rho) > 0.18 * 0.99:
+        pinned.append("low-score correction")
+
     return Ratings(
+        at_bounds=pinned,
         converged=bool(res.success),
         fit_message=message,
         teams=list(td.teams),
@@ -305,10 +320,13 @@ def score_matrix(lam_home: float, lam_away: float, rho: float,
     pa = np.exp(-lam_away + goals * np.log(max(lam_away, 1e-9)) - gammaln(goals + 1.0))
     mat = np.outer(ph, pa)
 
+    # the correction touches only the four low-score cells, which a matrix
+    # smaller than 2x2 does not have
     mat[0, 0] *= 1.0 - lam_home * lam_away * rho
-    mat[0, 1] *= 1.0 + lam_home * rho
-    mat[1, 0] *= 1.0 + lam_away * rho
-    mat[1, 1] *= 1.0 - rho
+    if k > 1:
+        mat[0, 1] *= 1.0 + lam_home * rho
+        mat[1, 0] *= 1.0 + lam_away * rho
+        mat[1, 1] *= 1.0 - rho
     mat = np.clip(mat, 0.0, None)
     total = mat.sum()
     return mat / total if total > 0 else mat
