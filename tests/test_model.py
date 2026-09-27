@@ -13,11 +13,13 @@ from spl import aux_models as AUX
 from spl import features as F
 from spl import model as M
 from spl.data import Dataset, Injury, Match, Player, resolve_team_name
+from spl.config import MODEL as _MODEL
 from spl.predict import Predictor, render, render_compact
 from tests.synthetic import make_dataset
 
 DS, TRUTH = make_dataset()
 RATINGS = M.fit(DS.matches)
+MODEL_CAP = _MODEL.rest_days_cap
 
 
 class TestNameResolution(unittest.TestCase):
@@ -1006,3 +1008,79 @@ class TestLikelihoodAgainstAReference(unittest.TestCase):
         theta[5:5 + self.n] = 2.5
         theta[5 + self.n:5 + 2 * self.n] = -2.5
         self.assertTrue(np.isfinite(self.objective[0](theta)))
+
+
+class TestFeatureFuzz(unittest.TestCase):
+    """Degenerate schedules and hostile squad data must not crash the feature
+    layer or push the availability index outside [0, 1]."""
+
+    BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def _matches(self, n, dup_dates=False, same_team=False, unplayed=False):
+        import random
+        rng = random.Random(7)
+        out = []
+        for i in range(n):
+            h, a = (5, 5) if same_team else rng.sample(range(6), 2)
+            dt = self.BASE if dup_dates else self.BASE + timedelta(days=i)
+            out.append(Match(i, 2026, dt.isoformat(), h, a, "H", "A",
+                             "NS" if unplayed else "FT",
+                             None if unplayed else rng.randint(0, 5),
+                             None if unplayed else rng.randint(0, 5)))
+        return out
+
+    def test_degenerate_schedules(self):
+        cases = {
+            "empty": [],
+            "all unplayed": self._matches(20, unplayed=True),
+            "all at one instant": self._matches(20, dup_dates=True),
+            "self-fixtures": self._matches(20, same_team=True),
+            "single match": self._matches(1),
+        }
+        for label, matches in cases.items():
+            for tid in (0, 5, 999):
+                for ko in (self.BASE - timedelta(days=5), self.BASE,
+                           self.BASE + timedelta(days=1000)):
+                    F.rest_days(matches, tid, ko)
+                    F.congestion(matches, tid, ko)
+                    F.form(matches, tid, ko)
+                    F.head_to_head(matches, tid, (tid + 1) % 6, ko)
+
+    def test_rest_days_and_congestion_stay_sane(self):
+        matches = self._matches(40)
+        ko = self.BASE + timedelta(days=60)
+        for tid in range(6):
+            rest = F.rest_days(matches, tid, ko)
+            if rest is not None:
+                self.assertGreaterEqual(rest, 0.0)
+                self.assertLessEqual(rest, MODEL_CAP)
+            self.assertGreaterEqual(F.congestion(matches, tid, ko), 0)
+
+    def test_availability_survives_hostile_squads(self):
+        squads = {
+            "empty": [],
+            "zero minutes": [Player(i, 1, "P%d" % i, "Midfielder", 0.0)
+                             for i in range(25)],
+            "negative minutes": [Player(i, 1, "P%d" % i, "Midfielder", -100.0)
+                                 for i in range(25)],
+            "one player": [Player(0, 1, "P0", "Attacker", 3000.0)],
+            "no position": [Player(i, 1, "P%d" % i, None, 900.0)
+                            for i in range(25)],
+            "absurd minutes": [Player(i, 1, "P%d" % i, "Defender", 1e9)
+                               for i in range(25)],
+        }
+        injuries = {
+            "none": [],
+            "unknown player": [Injury(1, 9999, "Ghost", "Missing Fixture", "x")],
+            "no id": [Injury(1, None, "Nameless", "Missing Fixture", "x")],
+            "unrecognised type": [Injury(1, 0, "P0", "Suspended-ish", "x")],
+            "duplicated": [Injury(1, i % 25, "P%d" % (i % 25), "Missing Fixture", "x")
+                           for i in range(50)],
+        }
+        for squad in squads.values():
+            for inj in injuries.values():
+                av = F.availability(1, inj, squad)
+                for value in (av.overall_available, av.attack_available,
+                              av.defence_available):
+                    self.assertGreaterEqual(value, 0.0)
+                    self.assertLessEqual(value, 1.0)

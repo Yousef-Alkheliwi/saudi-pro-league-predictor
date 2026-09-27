@@ -247,6 +247,15 @@ and more current.
 - **No lineup or transfer-window awareness.** A club that sold its top scorer looks
   unchanged until enough matches accumulate. Minutes-weighted ratings adapt within a
   few weeks, not immediately.
+- **Total goals look slightly high in mismatches.** Out of sample, the residual
+  in total goals rises with the size of the predicted gap: about level in even
+  fixtures, roughly half a goal too high where one side is a strong favourite.
+  Regressing that residual on the predicted gap gives a slope of +0.27 with a
+  t of 2.05 over 366 matches — weak evidence, and one of several comparisons
+  made, so it may be noise. The margin itself is well scaled: regressing actual
+  supremacy on predicted gives a slope of 0.987, indistinguishable from 1. No
+  correction has been applied, because fitting one to 366 matches would more
+  likely capture the noise than the effect.
 - **Predictions are probabilistic.** A 55% favourite loses 45% of the time. The
   calibration table in `backtest` is the thing to judge, not whether single calls
   came in.
