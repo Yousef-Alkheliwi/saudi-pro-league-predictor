@@ -120,6 +120,19 @@ def backtest(ds: Dataset, start: Optional[datetime] = None,
              cfg: Optional[ModelConfig] = None,
              include_tempo: bool = True, log=None) -> BacktestResult:
     cfg = cfg or MODEL
+    # Both are used as slice bounds and loop moduli below. A value <= 0 does not
+    # mean "the smallest sensible amount" - `played[:0]` silently produces an
+    # empty baseline (whose log loss is then the -log(EPS) floor, ~27.6, making
+    # every "% better than baseline" figure meaningless), and a *negative*
+    # value is reinterpreted as Python's from-the-end slicing, testing on a
+    # small tail window instead of raising. `refit_every <= 0` is coerced to 1
+    # by the `max(1, ...)` below, which refits on every single match and can
+    # run for minutes with no warning - indistinguishable from a hang.
+    if min_train_matches < 1:
+        raise ValueError("min_train_matches must be at least 1, got %d"
+                         % min_train_matches)
+    if refit_every < 1:
+        raise ValueError("refit_every must be at least 1, got %d" % refit_every)
     played = ds.played_matches
     if len(played) <= min_train_matches + 5:
         raise ValueError("need more than %d finished matches to backtest; have %d"

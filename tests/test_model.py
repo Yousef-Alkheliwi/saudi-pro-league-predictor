@@ -1084,3 +1084,59 @@ class TestFeatureFuzz(unittest.TestCase):
                               av.defence_available):
                     self.assertGreaterEqual(value, 0.0)
                     self.assertLessEqual(value, 1.0)
+
+
+class TestBacktestParameterValidation(unittest.TestCase):
+    """min_train_matches and refit_every are used as a slice bound and a loop
+    modulus. A value <= 0 does not degrade gracefully: `played[:0]` gives an
+    empty baseline whose log loss is the -log(EPS) floor (~27.6), a *negative*
+    value is reinterpreted as Python's from-the-end slicing and silently tests
+    on the wrong window, and `refit_every <= 0` is coerced to 1 by `max(1, .)`,
+    refitting on every match - minutes of runtime with no warning."""
+
+    def test_zero_min_train_is_rejected(self):
+        from spl.backtest import backtest
+        with self.assertRaises(ValueError) as ctx:
+            backtest(DS, min_train_matches=0)
+        self.assertIn("at least 1", str(ctx.exception))
+
+    def test_negative_min_train_is_rejected(self):
+        from spl.backtest import backtest
+        with self.assertRaises(ValueError):
+            backtest(DS, min_train_matches=-50)
+
+    def test_zero_refit_every_is_rejected(self):
+        from spl.backtest import backtest
+        with self.assertRaises(ValueError) as ctx:
+            backtest(DS, min_train_matches=200, refit_every=0)
+        self.assertIn("at least 1", str(ctx.exception))
+
+    def test_negative_refit_every_is_rejected(self):
+        from spl.backtest import backtest
+        with self.assertRaises(ValueError):
+            backtest(DS, min_train_matches=200, refit_every=-3)
+
+    def test_a_valid_call_still_works(self):
+        from spl.backtest import backtest
+        res = backtest(DS, min_train_matches=240, refit_every=30,
+                       include_tempo=False)
+        self.assertGreater(res.n, 0)
+
+    def test_cli_reports_it_without_a_traceback(self):
+        from spl import cli
+        import io
+        import contextlib
+        args = cli.build_parser().parse_args(
+            ["backtest", "--min-train", "0"])
+        args.dataset = None
+        original = cli.Dataset.load
+        cli.Dataset.load = staticmethod(lambda *a, **k: DS)
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                code = cli.cmd_backtest(args)
+        finally:
+            cli.Dataset.load = original
+        self.assertEqual(code, 1)
+        self.assertIn("cannot backtest", err.getvalue())
