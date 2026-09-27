@@ -519,35 +519,40 @@ if __name__ == "__main__":
 class TestDataVintageHonesty(unittest.TestCase):
     """Stale ratings must be labelled as such, loudly."""
 
-    def _pred(self, age_days, plan_limited=False, injuries=True):
+    def _pred(self, stale_days=3, horizon_days=5, plan_limited=False,
+              injuries=True):
         ds = Dataset(league_id=307, fetched_at="now", teams=dict(DS.teams),
                      matches=list(DS.matches),
                      stats=list(DS.stats), players=list(DS.players),
                      injuries=list(DS.injuries) if injuries else [])
         ds.plan_limited = plan_limited
-        p = Predictor(ds)
         newest = ds.played_matches[-1].dt
+        now = newest + timedelta(days=stale_days)
+        p = Predictor(ds, as_of=now)
         return p.predict(sorted(ds.teams)[0], sorted(ds.teams)[1],
-                         kickoff=newest + timedelta(days=age_days))
+                         kickoff=now + timedelta(days=horizon_days))
 
-    def test_fresh_data_has_no_warning(self):
+    def test_fresh_data_and_a_near_fixture_has_no_warning(self):
         from spl.predict import _data_warnings
-        pred = self._pred(7)
+        pred = self._pred(stale_days=3, horizon_days=5)
         self.assertEqual(_data_warnings(pred), [])
         self.assertNotIn("READ THIS FIRST", render(pred))
 
-    def test_stale_data_warns_and_downgrades_confidence(self):
+    def test_old_data_warns_and_downgrades_confidence(self):
         from spl.predict import _data_warnings
-        pred = self._pred(400)
+        pred = self._pred(stale_days=400, horizon_days=5)
         self.assertTrue(_data_warnings(pred))
         self.assertIn("READ THIS FIRST", render(pred))
         self.assertIn("NOT current-form", render(pred))
-        self.assertIn("stale", pred.confidence())
+        self.assertIn("old", pred.confidence())
 
-    def test_data_age_is_measured_to_kickoff(self):
-        pred = self._pred(90)
-        self.assertAlmostEqual(pred.data_age_days, 90.0, delta=1.0)
-        self.assertEqual(pred.confidence(), "low")
+    def test_staleness_is_measured_to_now_not_to_kickoff(self):
+        """Measuring to kickoff made fresh data look stale whenever the fixture
+        was far off."""
+        pred = self._pred(stale_days=10, horizon_days=90)
+        self.assertAlmostEqual(pred.staleness_days, 10.0, delta=1.0)
+        self.assertAlmostEqual(pred.horizon_days, 90.0, delta=1.0)
+        self.assertNotIn("old", pred.confidence())
 
     def test_plan_limitation_is_surfaced(self):
         pred = self._pred(7, plan_limited=True)
@@ -854,3 +859,54 @@ class TestScoreMatrixFuzz(unittest.TestCase):
             mat = M.score_matrix(2.0, 1.5, -0.1, max_goals=cap)
             self.assertEqual(mat.shape, (cap + 1, cap + 1))
             self.assertAlmostEqual(mat.sum(), 1.0, places=9)
+
+
+class TestStalenessVersusHorizon(unittest.TestCase):
+    """Old data and a distant fixture both lower the value of a prediction, but
+    they are different problems with different remedies, and the report used to
+    describe fresh data as stale whenever the fixture was far off."""
+
+    def _pred(self, stale_days, horizon_days):
+        newest = DS.played_matches[-1].dt
+        now = newest + timedelta(days=stale_days)
+        p = Predictor(DS, as_of=now)
+        ids = sorted(DS.teams)
+        return p.predict(ids[0], ids[1], kickoff=now + timedelta(days=horizon_days))
+
+    def test_fresh_data_is_never_called_stale(self):
+        from spl.predict import _data_warnings
+        pred = self._pred(stale_days=2, horizon_days=300)
+        self.assertLess(pred.staleness_days, 5)
+        self.assertGreater(pred.horizon_days, 250)
+        self.assertNotIn("stale", pred.confidence())
+        self.assertFalse(any("newest match in the model" in w
+                             for w in _data_warnings(pred)))
+
+    def test_a_distant_fixture_is_named_as_such(self):
+        from spl.predict import _data_warnings
+        pred = self._pred(stale_days=2, horizon_days=300)
+        self.assertIn("days away", pred.confidence())
+        self.assertTrue(any("days away" in w for w in _data_warnings(pred)))
+
+    def test_genuinely_old_data_is_still_flagged(self):
+        from spl.predict import _data_warnings
+        pred = self._pred(stale_days=400, horizon_days=3)
+        self.assertIn("old", pred.confidence())
+        self.assertTrue(any("newest match in the model" in w
+                            for w in _data_warnings(pred)))
+
+    def test_fresh_data_and_a_near_fixture_is_high(self):
+        self.assertEqual(self._pred(stale_days=3, horizon_days=5).confidence(),
+                         "high")
+
+    def test_staleness_never_goes_negative(self):
+        pred = self._pred(stale_days=0, horizon_days=10)
+        self.assertGreaterEqual(pred.staleness_days, 0.0)
+        self.assertGreaterEqual(pred.horizon_days, 0.0)
+
+    def test_the_two_measures_are_independent(self):
+        near_fresh = self._pred(2, 5)
+        far_fresh = self._pred(2, 300)
+        self.assertAlmostEqual(near_fresh.staleness_days,
+                               far_fresh.staleness_days, delta=0.01)
+        self.assertGreater(far_fresh.horizon_days, near_fresh.horizon_days)

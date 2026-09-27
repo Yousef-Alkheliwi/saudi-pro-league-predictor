@@ -35,13 +35,35 @@ class Prediction:
     ratings: M.Ratings
     #: newest finished match the ratings are based on
     data_as_of: Optional[datetime] = None
+    #: the moment the prediction was made from - real "now", or the cutoff when
+    #: replaying history in a backtest
+    as_of: Optional[datetime] = None
     #: True when the subscription blocked recent seasons
     plan_limited: bool = False
     #: True when no live injury list was retrievable
     injuries_available: bool = True
 
     @property
+    def staleness_days(self) -> Optional[float]:
+        """How old the data is *now* - a reason to refetch."""
+        if self.data_as_of is None:
+            return None
+        ref = self.as_of or datetime.now(timezone.utc)
+        return max(0.0, (ref - self.data_as_of).total_seconds() / 86400.0)
+
+    @property
+    def horizon_days(self) -> Optional[float]:
+        """How far ahead the fixture is - a reason to wait, not to refetch."""
+        ref = self.as_of or datetime.now(timezone.utc)
+        return max(0.0, (self.kickoff - ref).total_seconds() / 86400.0)
+
+    @property
     def data_age_days(self) -> Optional[float]:
+        """Kept for callers that want the span from newest match to kickoff.
+
+        Do not judge staleness with this: it grows when the fixture is far off
+        even though the data is perfectly current. Use `staleness_days`.
+        """
         if self.data_as_of is None:
             return None
         return (self.kickoff - self.data_as_of).total_seconds() / 86400.0
@@ -51,22 +73,34 @@ class Prediction:
         return self.scorelines[0]
 
     def confidence(self) -> str:
-        """Qualitative read on how much data backs this prediction.
+        """Qualitative read on how much this prediction is worth.
 
-        Data vintage dominates: ratings built from a season that ended a year ago
-        describe squads that no longer exist, whatever the sample size.
+        Staleness and horizon are separate. Stale ratings describe squads that
+        no longer exist, whatever the sample size. A distant fixture is a
+        forecast about a team that has not been picked yet. Both lower the
+        value of the number, for different reasons and with different remedies.
         """
-        age = self.data_age_days
-        if age is not None and age > 180:
-            return "low - data is %.0f months stale" % (age / 30.0)
+        stale = self.staleness_days
+        if stale is not None and stale > 180:
+            return "low - data is %.0f months old" % (stale / 30.0)
+        if stale is not None and stale > 45:
+            return "low - data is %.0f days old" % stale
+
+        horizon = self.horizon_days
         n_home = self.features.form_home.matches
         n_away = self.features.form_away.matches
         rows = self.tempo.sample_rows
-        if age is not None and age > 45:
-            return "low"
-        if min(n_home, n_away) >= 5 and self.ratings.n_matches >= 150 and rows >= 60:
+        strong = (min(n_home, n_away) >= 5 and self.ratings.n_matches >= 150
+                  and rows >= 60)
+        fair = min(n_home, n_away) >= 3 and self.ratings.n_matches >= 60
+
+        if horizon is not None and horizon > 120:
+            return "low - fixture is %.0f days away" % horizon
+        if horizon is not None and horizon > 45:
+            return "medium - fixture is %.0f days away" % horizon
+        if strong:
             return "high"
-        if min(n_home, n_away) >= 3 and self.ratings.n_matches >= 60:
+        if fair:
             return "medium"
         return "low"
 
@@ -109,6 +143,7 @@ class Predictor:
         played = self.ds.played_matches
         return Prediction(
             data_as_of=played[-1].dt if played else None,
+            as_of=self.as_of,
             plan_limited=self.ds.plan_limited,
             injuries_available=bool(self.ds.injuries),
             home_id=home_id, away_id=away_id,
@@ -158,12 +193,18 @@ class Predictor:
 def _data_warnings(pred: Prediction) -> List[str]:
     """Anything that makes the numbers below less trustworthy than they look."""
     out: List[str] = []
-    age = pred.data_age_days
-    if age is not None and age > 45:
-        out.append("Ratings are built from matches up to %s - %.0f days before this"
-                   % (pred.data_as_of.strftime("%d %b %Y"), age))
-        out.append("kickoff. Squads, managers and form have moved on since. These are")
-        out.append("NOT current-form predictions.")
+    stale = pred.staleness_days
+    if stale is not None and stale > 45:
+        out.append("The newest match in the model is %s, %.0f days ago. Squads and"
+                   % (pred.data_as_of.strftime("%d %b %Y"), stale))
+        out.append("form have moved on since, and a refresh would fix that. These")
+        out.append("are NOT current-form predictions.")
+    horizon = pred.horizon_days
+    if horizon is not None and horizon > 45:
+        out.append("This fixture is %.0f days away. The data behind it is current,"
+                   % horizon)
+        out.append("but line-ups, transfers and form will all change before it is")
+        out.append("played - treat it as a long-range forecast.")
     if pred.plan_limited:
         out.append("The API subscription does not cover recent seasons, so no")
         out.append("current-season data could be fetched.")

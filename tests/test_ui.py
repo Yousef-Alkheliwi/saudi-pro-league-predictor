@@ -50,8 +50,16 @@ class TestExportPayload(unittest.TestCase):
 
     def test_exported_numbers_match_the_model(self):
         """The page must not be able to show anything the model would not."""
+        from spl.export import _fixture_cutoff
+        cutoff = _fixture_cutoff()
+        scheduled = {}
+        for m in DS.upcoming_matches:
+            if m.dt >= cutoff:
+                scheduled.setdefault((m.home_id, m.away_id), m)
         for p in PAYLOAD["pairings"][:12]:
-            live = PREDICTOR.predict(p["home"], p["away"])
+            match = scheduled.get((p["home"], p["away"]))
+            live = (PREDICTOR.predict_fixture(match) if match is not None
+                    else PREDICTOR.predict(p["home"], p["away"]))
             self.assertAlmostEqual(p["p"]["home"], live.markets["home"], places=3)
             self.assertAlmostEqual(p["xg"]["home"], live.markets["exp_goals_home"],
                                    places=2)
@@ -368,3 +376,68 @@ class TestStaleFixturesExcluded(unittest.TestCase):
         rule = re.search(r"\.sg-cell\.peak\{([^}]*)\}", css).group(1)
         self.assertNotIn("--accent", rule)
         self.assertIn("--ink", rule)
+
+
+class TestScheduledFixturesUseTheirOwnKickoff(unittest.TestCase):
+    """Rest days and congestion are read at the kickoff, so predicting a real
+    fixture at a generic default date gives a different answer from the command
+    line, which uses the fixture's own date."""
+
+    @classmethod
+    def setUpClass(cls):
+        from datetime import datetime, timedelta, timezone
+        from spl.data import Match
+        ds = Dataset(league_id=1, fetched_at="now", teams=dict(DS.teams),
+                     matches=list(DS.matches), stats=list(DS.stats))
+        ids = sorted(DS.teams)
+        now = datetime.now(timezone.utc)
+        # pick a pairing the synthetic league does not already schedule
+        taken = {(m.home_id, m.away_id) for m in ds.upcoming_matches}
+        pair = next((a, b) for a in ids for b in ids
+                    if a != b and (a, b) not in taken)
+        # far enough out that the rest-days cap does not hide the gap
+        cls.match = Match(970001, 2026, (now + timedelta(days=80)).isoformat(),
+                          pair[0], pair[1], DS.teams[pair[0]], DS.teams[pair[1]],
+                          "NS")
+        ds.matches.append(cls.match)
+        cls.ds = ds
+        cls.predictor = Predictor(ds)
+        cls.payload = build_payload(ds, predictor=cls.predictor,
+                                    log=lambda *a: None)
+
+    def _exported(self):
+        return next(p for p in self.payload["pairings"]
+                    if p["home"] == self.match.home_id
+                    and p["away"] == self.match.away_id)
+
+    def test_the_exported_pairing_matches_the_cli(self):
+        cli = self.predictor.predict_fixture(self.match)
+        got = self._exported()
+        self.assertAlmostEqual(got["p"]["home"], cli.markets["home"], places=4)
+        self.assertAlmostEqual(got["xg"]["home"], cli.markets["exp_goals_home"],
+                               places=3)
+
+    def test_confidence_matches_what_the_cli_reports(self):
+        """Confidence depends on the kickoff, so it only agrees if the export
+        used the fixture's own date rather than a generic default."""
+        cli = self.predictor.predict_fixture(self.match)
+        self.assertEqual(self._exported()["conf"], cli.confidence())
+
+    def test_the_kickoff_actually_reached_the_features(self):
+        """Rest days are read at the kickoff; a generic default would give a
+        different figure from the fixture's own date."""
+        cli = self.predictor.predict_fixture(self.match)
+        default = self.predictor.predict(self.match.home_id, self.match.away_id)
+        self.assertNotEqual(cli.kickoff, default.kickoff)
+        exported = self._exported()
+        self.assertAlmostEqual(exported["p"]["home"], cli.markets["home"],
+                               places=4)
+
+    def test_pairings_with_no_fixture_still_export(self):
+        ids = sorted(DS.teams)
+        other = next(p for p in self.payload["pairings"]
+                     if (p["home"], p["away"]) != (ids[0], ids[1]))
+        self.assertIn("p", other)
+        self.assertAlmostEqual(
+            other["p"]["home"] + other["p"]["draw"] + other["p"]["away"],
+            1.0, places=3)

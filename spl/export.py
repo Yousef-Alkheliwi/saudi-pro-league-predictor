@@ -28,6 +28,10 @@ GRID = 7
 STALE_FIXTURE_HOURS = 6
 
 
+def _fixture_cutoff() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(hours=STALE_FIXTURE_HOURS)
+
+
 def _grid(pred: Prediction) -> List[List[float]]:
     """The scoreline heat-map, recomputed from the prediction's own rates."""
     mat = M.score_matrix(pred.lam_home, pred.lam_away, pred.ratings.rho,
@@ -130,12 +134,31 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
         })
 
     log("computing %d pairings..." % (len(club_ids) * (len(club_ids) - 1)))
+    # A pairing that is a real scheduled fixture must be predicted at that
+    # fixture's kickoff, not at a generic few-days-ahead default: rest days and
+    # congestion are read at the kickoff, so the two differ once a club has a
+    # match between now and then. The command line already predicts scheduled
+    # fixtures at their own date, and the page must not disagree with it.
+    # Same cutoff as the fixture list: a postponed match stays "not started"
+    # forever, and `upcoming_matches` is sorted ascending, so without this the
+    # stale one would win and the pairing would be predicted at a date in the
+    # past.
+    sched_cutoff = _fixture_cutoff()
+    scheduled = {}
+    for m in ds.upcoming_matches:
+        if m.dt >= sched_cutoff:
+            scheduled.setdefault((m.home_id, m.away_id), m)
+
     pairings = []
     for home in club_ids:
         for away in club_ids:
             if home == away:
                 continue
-            pairings.append(_pairing(predictor.predict(home, away)))
+            match = scheduled.get((home, away))
+            if match is not None:
+                pairings.append(_pairing(predictor.predict_fixture(match)))
+            else:
+                pairings.append(_pairing(predictor.predict(home, away)))
 
     # Real scheduled fixtures, so the page can open a club's actual next match
     # rather than making the reader guess an opponent.
@@ -146,7 +169,7 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
     # at the head of "Upcoming", become the page's default fixture, and be
     # reported as the next match for both clubs involved. The few hours of
     # grace keep a match that has just kicked off from vanishing.
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=STALE_FIXTURE_HOURS)
+    cutoff = _fixture_cutoff()
     dropped = 0
     for m in ds.upcoming_matches:
         if m.dt < cutoff:
