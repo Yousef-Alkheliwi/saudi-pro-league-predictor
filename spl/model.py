@@ -192,8 +192,11 @@ def fit(matches: Sequence[Match], as_of: Optional[datetime] = None,
             + b_rest * td.rest_h + b_cong * td.cong_h
         lin_a = base + attack[td.away] - defence[td.home] \
             + b_rest * td.rest_a + b_cong * td.cong_a
-        lin_h = np.clip(lin_h, -6.0, 3.0)
-        lin_a = np.clip(lin_a, -6.0, 3.0)
+        # No clipping here. The parameter bounds already cap the linear
+        # predictor near 11.5, and exp(11.5) is about 1e5 - nowhere near
+        # overflowing a float64. Clipping instead made the objective exactly
+        # flat wherever it bit, so the gradient vanished in a region the
+        # optimiser has to cross, while it still reported success.
         lam, mu = np.exp(lin_h), np.exp(lin_a)
         tau = _dc_tau(td.hg, td.ag, lam, mu, rho)
         ll = td.weight * (td.hg * lin_h - lam + td.ag * lin_a - mu + np.log(tau))
@@ -306,6 +309,10 @@ def goal_rates(ratings: Ratings, home_id: int, away_id: int,
             lin_a -= adj / 2.0
             comp["h2h"] = adj
 
+    # A rail on the output, not a guard against overflow: no side scores at a
+    # rate of 20, so anything beyond that is a broken input rather than a
+    # prediction. It has never bound on real data - the highest rate seen is
+    # about 4.1.
     lam_h = float(np.exp(np.clip(lin_h, -6.0, 3.0)))
     lam_a = float(np.exp(np.clip(lin_a, -6.0, 3.0)))
     return GoalRates(lam_home=lam_h, lam_away=lam_a, components=comp)

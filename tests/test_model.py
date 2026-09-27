@@ -910,3 +910,99 @@ class TestStalenessVersusHorizon(unittest.TestCase):
         self.assertAlmostEqual(near_fresh.staleness_days,
                                far_fresh.staleness_days, delta=0.01)
         self.assertGreater(far_fresh.horizon_days, near_fresh.horizon_days)
+
+
+class TestLikelihoodAgainstAReference(unittest.TestCase):
+    """The fitted objective is vectorised numpy. This checks it against a
+    plain loop written from the formula, so a vectorisation mistake - a
+    misaligned index, a weight applied to the wrong term - cannot hide."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.td = M.build_training_data(DS.matches[:400])
+        cls.n = len(cls.td.teams)
+        captured = {}
+
+        def capture(nll, theta0, **kw):
+            captured["f"] = nll
+
+            class R:
+                x = theta0
+                success = True
+                status = 0
+                message = "probe"
+                fun = 0.0
+                nit = 0
+            return R()
+
+        original = M.minimize
+        M.minimize = capture
+        try:
+            M.fit(DS.matches[:400])
+        finally:
+            M.minimize = original
+        cls.objective = [captured["f"]]   # boxed: see note above
+
+    def _reference(self, theta):
+        td, n = self.td, self.n
+        base, home_adv, rho_raw, b_rest, b_cong = theta[:5]
+        att, dfn = theta[5:5 + n], theta[5 + n:5 + 2 * n]
+        rho = 0.18 * math.tanh(rho_raw)
+        total = 0.0
+        for i in range(len(td.hg)):
+            h, a = td.home[i], td.away[i]
+            x, y, w = td.hg[i], td.ag[i], td.weight[i]
+            lin_h = (base + home_adv + att[h] - dfn[a]
+                     + b_rest * td.rest_h[i] + b_cong * td.cong_h[i])
+            lin_a = (base + att[a] - dfn[h]
+                     + b_rest * td.rest_a[i] + b_cong * td.cong_a[i])
+            lam, mu = math.exp(lin_h), math.exp(lin_a)
+            if x == 0 and y == 0:
+                tau = 1 - lam * mu * rho
+            elif x == 0 and y == 1:
+                tau = 1 + lam * rho
+            elif x == 1 and y == 0:
+                tau = 1 + mu * rho
+            elif x == 1 and y == 1:
+                tau = 1 - rho
+            else:
+                tau = 1.0
+            total += w * (x * lin_h - lam + y * lin_a - mu
+                          + math.log(max(tau, 1e-10)))
+            total -= w * (math.lgamma(x + 1) + math.lgamma(y + 1))
+        cfg = M.MODEL
+        pen = cfg.ridge * (float(np.sum(att ** 2)) + float(np.sum(dfn ** 2)))
+        pen += 50.0 * self.n * (float(att.mean()) ** 2 + float(dfn.mean()) ** 2)
+        pen += (b_rest ** 2 + b_cong ** 2) / (2.0 * cfg.schedule_prior_sd ** 2)
+        return -total + pen
+
+    def test_the_two_agree_on_random_parameters(self):
+        import random
+        rng = random.Random(5)
+        worst = 0.0
+        for _ in range(25):
+            theta = np.array(
+                [rng.uniform(-1, 1), rng.uniform(-0.5, 0.8), rng.uniform(-2, 2),
+                 rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3)]
+                + [rng.uniform(-1, 1) for _ in range(2 * self.n)])
+            got, want = self.objective[0](theta), self._reference(theta)
+            worst = max(worst, abs(got - want) / max(1.0, abs(want)))
+        self.assertLess(worst, 1e-10, "worst relative difference %.3e" % worst)
+
+    def test_they_agree_where_the_old_clip_used_to_bite(self):
+        """Parameters large enough to push the linear predictor past 3, which
+        the removed clip would have flattened."""
+        theta = np.zeros(5 + 2 * self.n)
+        theta[0], theta[1] = 1.8, 1.4
+        theta[5:5 + self.n] = 1.5
+        theta[5 + self.n:5 + 2 * self.n] = -1.5
+        got, want = self.objective[0](theta), self._reference(theta)
+        self.assertAlmostEqual(got / want, 1.0, places=10)
+
+    def test_the_objective_stays_finite_at_the_parameter_bounds(self):
+        theta = np.zeros(5 + 2 * self.n)
+        theta[0], theta[1] = 2.0, 1.5
+        theta[3], theta[4] = 0.6, 0.6
+        theta[5:5 + self.n] = 2.5
+        theta[5 + self.n:5 + 2 * self.n] = -2.5
+        self.assertTrue(np.isfinite(self.objective[0](theta)))
