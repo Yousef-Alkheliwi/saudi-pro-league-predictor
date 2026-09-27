@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -39,6 +39,22 @@ EARLIEST_SEASON = 2022
 #: how many months past the current one to request, so scheduled fixtures -
 #: the ones worth predicting - are in the snapshot
 LOOKAHEAD_MONTHS = 2
+
+#: A month's scoreboard is only final once it has been fetched this long after
+#: the month ended. Late kick-offs (ESPN buckets by US time), score corrections
+#: and box scores all settle inside this window.
+FINAL_GRACE_DAYS = 3
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _month_end(year: int, month: int) -> datetime:
+    """The first instant after the month, in UTC."""
+    if month == 12:
+        return datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    return datetime(year, month + 1, 1, tzinfo=timezone.utc)
 
 #: ESPN stat name -> our TeamStats field
 STAT_MAP = {
@@ -62,7 +78,7 @@ class Espn:
 
     def __init__(self, cache_dir: Optional[Path] = None, offline: bool = False,
                  min_interval: float = 0.4, timeout: float = 25.0,
-                 max_retries: int = 3) -> None:
+                 max_retries: int = 3, clock=None) -> None:
         self.cache_dir = Path(cache_dir or (CACHE_DIR / "espn"))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.offline = offline
@@ -73,6 +89,15 @@ class Espn:
         self.cache_hits = 0
         self._last_call = 0.0
         self._session = requests.Session()
+        #: wall-clock source; injectable so cache ageing can be tested
+        self.clock = clock or _utcnow
+        #: when the newest data served was actually fetched from the network -
+        #: a cache hit counts at its original fetch time, not at "now"
+        self.newest_fetch: Optional[float] = None
+
+    def _note(self, fetched_at: float) -> None:
+        if self.newest_fetch is None or fetched_at > self.newest_fetch:
+            self.newest_fetch = fetched_at
 
     # ---------------------------------------------------------------- plumbing
     def _cache_path(self, path: str, params: Dict[str, str]) -> Path:
@@ -81,14 +106,21 @@ class Espn:
         return self.cache_dir / ("%s__%s.json" % (path.replace("/", "_"), digest))
 
     def get(self, path: str, params: Optional[Dict[str, str]] = None,
-            ttl: float = 3600.0) -> dict:
+            ttl: float = 3600.0, not_before: Optional[float] = None) -> dict:
+        """Cached GET. A cached copy is used while younger than `ttl`, and -
+        when `not_before` is given - only if it was fetched at or after that
+        moment. Offline mode uses whatever is cached."""
         params = params or {}
         fp = self._cache_path(path, params)
         if fp.exists():
             try:
                 blob = json.loads(fp.read_text(encoding="utf-8"))
-                if self.offline or time.time() - blob.get("fetched_at", 0) < ttl:
+                fetched = blob.get("fetched_at", 0)
+                fresh = self.clock().timestamp() - fetched < ttl
+                settled = not_before is None or fetched >= not_before
+                if self.offline or (fresh and settled):
                     self.cache_hits += 1
+                    self._note(fetched)
                     return blob["payload"]
             except (ValueError, OSError, KeyError):
                 pass
@@ -119,19 +151,32 @@ class Espn:
             if isinstance(payload, dict) and payload.get("code") and payload.get("message"):
                 raise EspnError("ESPN rejected /%s %s: %s"
                                 % (path, params, payload["message"]))
-            fp.write_text(json.dumps({"fetched_at": time.time(), "payload": payload}),
+            stamp = self.clock().timestamp()
+            fp.write_text(json.dumps({"fetched_at": stamp, "payload": payload}),
                           encoding="utf-8")
+            self._note(stamp)
             return payload
         raise EspnError("giving up on /%s after %d attempts: %s"
                         % (path, self.max_retries, last))
 
     # ---------------------------------------------------------------- endpoints
     def month(self, year: int, month: int, ttl: Optional[float] = None) -> dict:
-        now = datetime.now(timezone.utc)
-        current = (year, month) >= (now.year, now.month)
-        if ttl is None:
-            ttl = 3600.0 if current else 365 * 86400.0
-        return self.get("scoreboard", {"dates": "%04d%02d" % (year, month)}, ttl=ttl)
+        """One month of fixtures and box scores.
+
+        A month is only final once it has been fetched after it ended. Choosing
+        the TTL by whether the month is past *now* is not enough: a copy fetched
+        on the 20th is still missing the last ten days of results, and treating
+        it as final froze those matches as "not started" for a year - they then
+        fell out of both the ratings and the fixture list.
+        """
+        params = {"dates": "%04d%02d" % (year, month)}
+        if ttl is not None:
+            return self.get("scoreboard", params, ttl=ttl)
+        settles = _month_end(year, month) + timedelta(days=FINAL_GRACE_DAYS)
+        if self.clock() < settles:
+            return self.get("scoreboard", params, ttl=3600.0)
+        return self.get("scoreboard", params, ttl=365 * 86400.0,
+                        not_before=settles.timestamp())
 
     def teams(self) -> dict:
         return self.get("teams", ttl=7 * 86400.0)
@@ -322,7 +367,7 @@ def season_months(season: int) -> List[Tuple[int, int]]:
 
 def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
                   with_logos: bool = True, log=print) -> Dataset:
-    now = datetime.now(timezone.utc)
+    now = getattr(client, "clock", _utcnow)()
     current = season_of(now)
     if seasons is None:
         seasons = range(max(EARLIEST_SEASON, current - 3), current + 1)
@@ -332,9 +377,13 @@ def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
                  fetched_at=now.isoformat(timespec="seconds"))
     ds.source = "ESPN (site.web.api.espn.com), soccer/%s" % LEAGUE
 
-    seen: set = set()
+    # One entry per fixture id. The same fixture can be listed more than once -
+    # postponed at its original date in one month, played in another - and the
+    # first listing is not the best one. A result always beats an unplayed
+    # listing; otherwise the later listing wins, since it carries the current
+    # date of a rescheduled match.
+    kept: Dict[int, Tuple[Match, List[TeamStats]]] = {}
     for season in seasons:
-        added = stats_added = 0
         for year, month in season_months(season):
             # look a couple of months ahead so upcoming fixtures are picked up;
             # stopping at the current month leaves nothing to predict
@@ -354,16 +403,21 @@ def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
                 if parsed is None:
                     continue
                 match, stats = parsed
-                if match.fixture_id in seen:
+                previous = kept.get(match.fixture_id)
+                if previous is not None and previous[0].played and not match.played:
                     continue
-                seen.add(match.fixture_id)
-                ds.matches.append(match)
-                ds.stats.extend(stats)
-                ds.teams.setdefault(match.home_id, match.home_name)
-                ds.teams.setdefault(match.away_id, match.away_name)
-                added += 1
-                stats_added += len(stats)
-        log("season %s: %d fixtures, %d box-score rows" % (season, added, stats_added))
+                kept[match.fixture_id] = (match, stats)
+
+    for match, stats in sorted(kept.values(), key=lambda ms: ms[0].dt):
+        ds.matches.append(match)
+        ds.stats.extend(stats)
+        ds.teams.setdefault(match.home_id, match.home_name)
+        ds.teams.setdefault(match.away_id, match.away_name)
+    for season in seasons:
+        in_season = [m for m in ds.matches if m.season == season]
+        ids = {m.fixture_id for m in in_season}
+        log("season %s: %d fixtures, %d box-score rows"
+            % (season, len(in_season), sum(1 for x in ds.stats if x.fixture_id in ids)))
 
     try:
         payload = client.teams()
@@ -390,6 +444,13 @@ def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
             ds.logos = fetch_logos(client, set(ds.teams), log=log)
         except Exception as exc:                      # pragma: no cover
             log("badges skipped: %s" % exc)
+
+    # The snapshot time is when the newest data was fetched, not when it was
+    # parsed: an offline re-parse of week-old caches is still week-old data.
+    newest = getattr(client, "newest_fetch", None)
+    if newest is not None:
+        ds.fetched_at = datetime.fromtimestamp(newest, timezone.utc).isoformat(
+            timespec="seconds")
 
     log("upstream calls: %d (cache hits %d)" % (client.calls_made, client.cache_hits))
     return ds

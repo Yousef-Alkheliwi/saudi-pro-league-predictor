@@ -262,16 +262,25 @@ class TestClientCaching(unittest.TestCase):
             self.assertEqual(c.calls_made, 0)
             self.assertEqual(c.cache_hits, 1)
 
-    def test_past_months_get_a_long_ttl_and_the_current_month_a_short_one(self):
+    def test_a_settled_month_needs_a_copy_fetched_after_it_settled(self):
+        """A past month gets a long TTL only for a copy fetched after the month
+        ended; an open month gets a short TTL and no such condition."""
+        from datetime import timedelta
         with tempfile.TemporaryDirectory() as d:
-            c = E.Espn(cache_dir=Path(d), offline=True)
+            now = datetime(2026, 11, 20, tzinfo=timezone.utc)
+            c = E.Espn(cache_dir=Path(d), offline=True, clock=lambda: now)
             seen = {}
-            c.get = lambda path, params, ttl: seen.__setitem__(params["dates"], ttl)
-            now = datetime.now(timezone.utc)
+            c.get = lambda path, params, ttl, not_before=None: seen.__setitem__(
+                params["dates"], (ttl, not_before))
             c.month(2024, 3)
-            c.month(now.year, now.month)
-            self.assertGreater(seen["202403"], 86400)
-            self.assertLessEqual(seen["%04d%02d" % (now.year, now.month)], 3600)
+            c.month(2026, 11)
+            ttl_past, gate_past = seen["202403"]
+            self.assertGreater(ttl_past, 86400)
+            self.assertEqual(gate_past, (E._month_end(2024, 3)
+                                         + timedelta(days=E.FINAL_GRACE_DAYS)).timestamp())
+            ttl_open, gate_open = seen["202611"]
+            self.assertLessEqual(ttl_open, 3600)
+            self.assertIsNone(gate_open)
 
 
 class TestBadges(unittest.TestCase):
@@ -399,3 +408,168 @@ class TestMalformedFeed(unittest.TestCase):
                      {"injuries": [None]}, {"injuries": [{"team": "x"}]},
                      {"injuries": [{"team": {"id": "1"}, "injuries": 3}]}):
             self.assertIsInstance(E.parse_injuries(junk), list)
+
+
+class TestMonthFinality(unittest.TestCase):
+    """A month's scoreboard is only final once fetched after the month ended.
+    Deciding by whether the month is past *now* froze any copy fetched mid-month
+    for a year, so late-month results were never picked up."""
+
+    @staticmethod
+    def _event(completed, fid="555", date="2026-10-25T18:00Z"):
+        return {"id": fid, "date": date,
+                "status": {"type": {"completed": completed, "description": "x"}},
+                "competitions": [{"competitors": [
+                    {"homeAway": "home", "score": "3" if completed else "0",
+                     "team": {"id": "929", "displayName": "Al Hilal"}},
+                    {"homeAway": "away", "score": "1" if completed else "0",
+                     "team": {"id": "817", "displayName": "Al Nassr"}}]}]}
+
+    def _read(self, fetched, now, offline=False):
+        """Cache an in-progress October, then read it at `now`."""
+        with tempfile.TemporaryDirectory() as d:
+            c = E.Espn(cache_dir=Path(d), min_interval=0, offline=offline,
+                       clock=lambda: now)
+            c._cache_path("scoreboard", {"dates": "202610"}).write_text(json.dumps(
+                {"fetched_at": fetched.timestamp(),
+                 "payload": {"events": [self._event(False)]}}))
+            calls = []
+            event = self._event
+
+            class Resp:
+                status_code = 200
+
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"events": [event(True)]}
+            c._session.get = lambda *a, **k: (calls.append(1), Resp())[1]
+            match, _ = E.parse_event(c.month(2026, 10)["events"][0])
+            return len(calls), match.played
+
+    def test_a_copy_fetched_mid_month_is_refetched_after_the_month(self):
+        calls, played = self._read(datetime(2026, 10, 20, tzinfo=timezone.utc),
+                                   datetime(2026, 11, 5, tzinfo=timezone.utc))
+        self.assertEqual(calls, 1)
+        self.assertTrue(played)
+
+    def test_inside_the_grace_window_the_month_is_still_open(self):
+        calls, _ = self._read(datetime(2026, 10, 20, tzinfo=timezone.utc),
+                              datetime(2026, 11, 2, tzinfo=timezone.utc))
+        self.assertEqual(calls, 1)
+
+    def test_a_copy_fetched_after_settling_is_trusted(self):
+        calls, _ = self._read(datetime(2026, 11, 6, tzinfo=timezone.utc),
+                              datetime(2026, 12, 1, tzinfo=timezone.utc))
+        self.assertEqual(calls, 0)
+
+    def test_offline_mode_still_uses_whatever_is_cached(self):
+        calls, played = self._read(datetime(2026, 10, 20, tzinfo=timezone.utc),
+                                   datetime(2026, 11, 5, tzinfo=timezone.utc),
+                                   offline=True)
+        self.assertEqual(calls, 0)
+        self.assertFalse(played)
+
+    def test_month_end_rolls_the_year(self):
+        self.assertEqual(E._month_end(2026, 12),
+                         datetime(2027, 1, 1, tzinfo=timezone.utc))
+        self.assertEqual(E._month_end(2026, 2),
+                         datetime(2026, 3, 1, tzinfo=timezone.utc))
+
+
+class TestDuplicateListings(unittest.TestCase):
+    """The same fixture id can appear in more than one month - postponed at its
+    original date, played at its new one. The first listing used to win, so the
+    real result and its box score were discarded."""
+
+    @staticmethod
+    def _ev(fid, date, completed):
+        return {"id": fid, "date": date,
+                "status": {"type": {"completed": completed, "description": "x"}},
+                "competitions": [{"competitors": [
+                    {"homeAway": "home", "score": "2" if completed else "0",
+                     "team": {"id": "929", "displayName": "Al Hilal"},
+                     "statistics": ([{"name": "totalShots", "displayValue": "15"}]
+                                    if completed else [])},
+                    {"homeAway": "away", "score": "0",
+                     "team": {"id": "817", "displayName": "Al Nassr"},
+                     "statistics": ([{"name": "totalShots", "displayValue": "7"}]
+                                    if completed else [])}]}]}
+
+    def _fetch(self, by_month):
+        class Stub:
+            calls_made = cache_hits = 0
+
+            def month(self, y, m):
+                return {"events": by_month.get((y, m), [])}
+
+            def teams(self):
+                return {}
+
+            def injuries(self):
+                return {"injuries": []}
+        return E.fetch_dataset(Stub(), seasons=[2025], with_logos=False,
+                               log=lambda *a: None)
+
+    def test_a_result_in_a_later_month_beats_an_earlier_postponement(self):
+        ds = self._fetch({(2025, 9): [self._ev("777", "2025-09-20T18:00Z", False)],
+                          (2025, 10): [self._ev("777", "2025-10-15T18:00Z", True)]})
+        kept = [m for m in ds.matches if m.fixture_id == 777]
+        self.assertEqual(len(kept), 1)
+        self.assertTrue(kept[0].played)
+        self.assertEqual(kept[0].dt.month, 10)
+        self.assertEqual(len([s for s in ds.stats if s.fixture_id == 777]), 2)
+
+    def test_an_unplayed_listing_never_overwrites_a_result(self):
+        ds = self._fetch({(2025, 9): [self._ev("777", "2025-09-20T18:00Z", True)],
+                          (2025, 10): [self._ev("777", "2025-10-15T18:00Z", False)]})
+        kept = [m for m in ds.matches if m.fixture_id == 777]
+        self.assertEqual(len(kept), 1)
+        self.assertTrue(kept[0].played)
+
+    def test_a_rescheduled_fixture_carries_its_new_date(self):
+        ds = self._fetch({(2025, 9): [self._ev("777", "2025-09-20T18:00Z", False)],
+                          (2025, 10): [self._ev("777", "2025-10-15T18:00Z", False)]})
+        kept = [m for m in ds.matches if m.fixture_id == 777]
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].dt.month, 10)
+
+    def test_box_scores_are_never_duplicated(self):
+        ds = self._fetch({(2025, 9): [self._ev("777", "2025-09-20T18:00Z", True)],
+                          (2025, 10): [self._ev("777", "2025-09-20T18:00Z", True)]})
+        self.assertEqual(len([s for s in ds.stats if s.fixture_id == 777]), 2)
+
+
+class TestSnapshotTime(unittest.TestCase):
+    """An offline re-parse used to stamp the snapshot with the current time,
+    so week-old data was labelled as fetched today."""
+
+    def _stub_client(self, d, fetched, now, offline):
+        c = E.Espn(cache_dir=Path(d), min_interval=0, offline=offline,
+                   clock=lambda: now)
+        for (y, m) in E.season_months(2026):
+            c._cache_path("scoreboard", {"dates": "%04d%02d" % (y, m)}).write_text(
+                json.dumps({"fetched_at": fetched.timestamp(),
+                            "payload": {"events": [EVENT] if (y, m) == (2026, 9) else []}}))
+        for path in ("teams", "injuries"):
+            c._cache_path(path, {}).write_text(json.dumps(
+                {"fetched_at": fetched.timestamp(), "payload": {}}))
+        return c
+
+    def test_an_offline_reparse_keeps_the_original_fetch_time(self):
+        fetched = datetime(2026, 9, 22, 8, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as d:
+            c = self._stub_client(d, fetched, now, offline=True)
+            ds = E.fetch_dataset(c, seasons=[2026], with_logos=False,
+                                 log=lambda *a: None)
+        self.assertEqual(ds.fetched_at, fetched.isoformat(timespec="seconds"))
+
+    def test_a_real_fetch_is_stamped_with_its_own_time(self):
+        c = E.Espn(cache_dir=Path(tempfile.mkdtemp()), min_interval=0,
+                   clock=lambda: datetime(2026, 10, 1, tzinfo=timezone.utc))
+        c._note(datetime(2026, 9, 1, tzinfo=timezone.utc).timestamp())
+        c._note(datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
+        self.assertEqual(c.newest_fetch,
+                         datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
