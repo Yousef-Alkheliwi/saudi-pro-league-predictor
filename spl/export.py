@@ -186,6 +186,30 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
         % (len(fixtures),
            ", %d stale unplayed fixture(s) skipped" % dropped if dropped else ""))
 
+    # Predicted XIs. Each club's is for its own next fixture: a red-card ban
+    # falls on that match only, so the date matters.
+    lineup_accuracy = None
+    if ds.appearances:
+        from .cli import lineup_json
+        from .squad import evaluate, predict_lineup
+        next_kickoff = {}
+        for f in fixtures:
+            for tid in (f["home"], f["away"]):
+                next_kickoff.setdefault(tid, datetime.fromisoformat(f["kickoff"]))
+        for club in clubs:
+            lineup = predict_lineup(ds, club["id"], next_kickoff.get(club["id"]))
+            club["lineup"] = lineup_json(lineup) if lineup else None
+        ev = evaluate(ds)
+        lineup_accuracy = {"n": ev.n, "right": round(ev.mean_correct, 2),
+                           "rule": round(ev.rule_correct, 2),
+                           "baseline": round(ev.baseline_correct, 2),
+                           "exact": round(ev.all_eleven, 3),
+                           "method": ev.method,
+                           "odds": {k: round(v, 2) for k, v in ev.odds}}
+        log("predicted XIs for %d clubs; replayed accuracy %.2f of 11 (baseline %.2f)"
+            % (sum(1 for c in clubs if c.get("lineup")), ev.mean_correct,
+               ev.baseline_correct))
+
     sample = predictor.predict(club_ids[0], club_ids[1])
     newest = played[-1] if played else None
     return {
@@ -204,6 +228,7 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
             "newest_available_season": ds.newest_available_season,
             "warnings": _data_warnings(sample),
             "source": ds.source,
+            "lineup_accuracy": lineup_accuracy,
         },
         "model": {
             "base": round(r.base, 4),

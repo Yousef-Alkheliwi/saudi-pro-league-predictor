@@ -81,9 +81,11 @@ def cmd_fetch(args) -> int:
 def _fetch_espn(args) -> int:
     """The free provider: no key, no quota, and the current season included."""
     from .providers.espn import Espn, EspnError, fetch_dataset as fetch_espn
+    from .providers.wikipedia import Wikipedia
     client = Espn(offline=args.offline)
     try:
-        ds = fetch_espn(client, seasons=args.seasons or None)
+        ds = fetch_espn(client, seasons=args.seasons or None,
+                        managers=Wikipedia(offline=args.offline))
     except EspnError as exc:
         print("ESPN error: %s" % exc, file=sys.stderr)
         return 1
@@ -125,9 +127,18 @@ def cmd_predict(args) -> int:
         print("%s" % exc, file=sys.stderr)
         return 2
     if args.json:
-        print(json.dumps(_as_dict(pred), indent=2))
+        blob = _as_dict(pred)
+        if ds.appearances:
+            from .squad import predict_lineup
+            blob["lineups"] = {}
+            for side, tid in (("home", pred.home_id), ("away", pred.away_id)):
+                lineup = predict_lineup(ds, tid, pred.kickoff)
+                blob["lineups"][side] = lineup_json(lineup) if lineup else None
+        print(json.dumps(blob, indent=2))
     else:
         print(render(pred, verbose=args.verbose))
+        if ds.appearances:
+            print(compact_lineups(ds, pred))
     return 0
 
 
@@ -195,6 +206,138 @@ def cmd_backtest(args) -> int:
         print("cannot backtest: %s" % exc, file=sys.stderr)
         return 1
     print(res.render())
+    return 0
+
+
+def _next_fixture(ds: Dataset, team_id: int):
+    now = datetime.now(timezone.utc)
+    for m in ds.upcoming_matches:
+        if m.dt >= now and team_id in (m.home_id, m.away_id):
+            return m
+    return None
+
+
+def _line_label(index: int, n_rows: int, row: int) -> str:
+    if row == 0:
+        return "GK"
+    if index == 1:
+        return "DEF"
+    if index == n_rows - 1:
+        return "ATT"
+    return "MID"
+
+
+def compact_lineups(ds: Dataset, pred) -> str:
+    """Both predicted XIs, a line each, for the end of a match report."""
+    from .squad import predict_lineup
+    out = ["", "LIKELY XIs  (manager's preferences and recent form, fitted on past"
+           " line-ups - names 8.8 of 11 starters right)"]
+    for tid in (pred.home_id, pred.away_id):
+        lineup = predict_lineup(ds, tid, pred.kickoff)
+        if lineup is None:
+            continue
+        names = "; ".join(", ".join(p.short_name for p in row) for row in lineup.rows)
+        out.append("  %-16s %-8s %s" % (ds.teams.get(tid, tid)[:16],
+                                        lineup.formation or "", names))
+        if lineup.manager:
+            out.append("  %-16s %-8s manager: %s" % ("", "", lineup.manager))
+        for a in lineup.absences:
+            out.append("  %-16s %-8s %s - %s" % ("", a.kind, a.name, a.reason))
+    return "\n".join(out) if len(out) > 2 else ""
+
+
+def lineup_json(lineup) -> dict:
+    def player(p):
+        return {"id": p.player_id, "name": p.name, "short": p.short_name,
+                "jersey": p.jersey, "pos": p.position, "row": p.row,
+                "lat": round(p.lateral, 2), "starts": p.starts, "of": p.of,
+                "flag": p.flag,
+                "p": round(p.p_start, 3) if p.p_start is not None else None}
+    return {"formation": lineup.formation, "matches_used": lineup.matches_used,
+            "manager": lineup.manager or None,
+            "manager_since": (lineup.manager_since.strftime("%b %Y")
+                              if lineup.manager_since and lineup.manager_since.year > 2000
+                              else None),
+            "method": lineup.method,
+            "last_match": (lineup.last_match.strftime("%d %b %Y")
+                           if lineup.last_match else None),
+            "xi": [player(p) for p in sorted(lineup.xi, key=lambda p: (p.row, p.lateral))],
+            "bench": [player(p) for p in lineup.bench[:5]],
+            "absences": [{"name": a.name, "kind": a.kind, "reason": a.reason}
+                         for a in lineup.absences]}
+
+
+def render_lineup(ds: Dataset, lineup, fixture=None) -> str:
+    from .squad import PredictedLineup  # noqa: F401  (type only)
+    name = ds.teams.get(lineup.team_id, str(lineup.team_id))
+    L = ["=" * 66, "  PREDICTED XI - %s" % name.upper()]
+    if fixture is not None:
+        opp = fixture.away_name if fixture.home_id == lineup.team_id else fixture.home_name
+        venue = "home" if fixture.home_id == lineup.team_id else "away"
+        L.append("  v %s (%s), %s" % (opp, venue, fixture.dt.strftime("%a %d %b %H:%M UTC")))
+    if lineup.manager:
+        L.append("  manager %s%s" % (lineup.manager,
+                 " (since %s)" % lineup.manager_since.strftime("%b %Y")
+                 if lineup.manager_since and lineup.manager_since.year > 2000 else ""))
+    L.append("  shape %s   |   from the last %d line-ups, newest %s"
+             % (lineup.formation or "n/a", lineup.matches_used,
+                lineup.last_match.strftime("%d %b %Y") if lineup.last_match else "-"))
+    L.append("  picked by: %s" % (
+        "a model of the manager's preferences and recent form, fitted on past line-ups"
+        if lineup.method == "model" else "last week's XI, less known absences"))
+    L.append("=" * 66)
+    rows = lineup.rows
+    for i, row in enumerate(rows):
+        L.append("  %-3s %s" % (_line_label(i, len(rows), row[0].row), "   ".join(
+            "%s %s" % (p.jersey or "-", p.short_name) for p in row)))
+    L.append("")
+    L.append("  %-4s %-26s %-6s %-9s %s" % ("No.", "player", "pos", "started", "chance"))
+    for p in sorted(lineup.xi, key=lambda p: (p.row, p.lateral)):
+        L.append("  %-4s %-26s %-6s %-9s %s%s"
+                 % (p.jersey or "-", p.name[:26], p.position or "-",
+                    "%d of %d" % (p.starts, p.of),
+                    "%3.0f%%" % (100 * p.p_start) if p.p_start is not None else "  -",
+                    "   (%s)" % p.flag if p.flag else ""))
+    if lineup.bench:
+        L.append("")
+        L.append("  next in line: " + ", ".join(
+            "%s (%s)" % (p.short_name, "%.0f%%" % (100 * p.p_start)
+                         if p.p_start is not None else "%d/%d" % (p.starts, p.of))
+            for p in lineup.bench[:5]))
+    if lineup.absences:
+        L.append("")
+        for a in lineup.absences:
+            L.append("  %-18s %s - %s" % (a.kind.upper(), a.name, a.reason))
+    L.append("")
+    L.append("  No injury feed exists for this league: an injured player only drops")
+    L.append("  out as his share of recent starts falls.")
+    return "\n".join(L)
+
+
+def cmd_lineup(args) -> int:
+    from .squad import evaluate, predict_lineup
+    ds = _load(args)
+    if not ds.appearances:
+        print("no line-ups in this snapshot - run `fetch` (ESPN source) first",
+              file=sys.stderr)
+        return 1
+    if args.evaluate:
+        print(evaluate(ds).render())
+        return 0
+    if not args.team:
+        print("give --team, or --evaluate to measure accuracy", file=sys.stderr)
+        return 2
+    try:
+        tid, _ = ds.resolve_team(args.team)
+    except LookupError as exc:
+        print("team lookup failed: %s" % exc, file=sys.stderr)
+        return 2
+    fixture = _next_fixture(ds, tid)
+    lineup = predict_lineup(ds, tid, fixture.dt if fixture else None)
+    if lineup is None:
+        print("no line-ups recorded for %s" % ds.teams.get(tid, tid), file=sys.stderr)
+        return 1
+    print(render_lineup(ds, lineup, fixture))
     return 0
 
 
@@ -357,6 +500,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-tempo", action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(func=cmd_backtest)
+
+    p = sub.add_parser("lineup", help="predicted starting XI for a club's next match")
+    p.add_argument("--team", default=None)
+    p.add_argument("--evaluate", action="store_true",
+                   help="replay every past line-up and report accuracy")
+    p.set_defaults(func=cmd_lineup)
 
     p = sub.add_parser("export", help="dump every pairing to JSON for the web UI")
     p.add_argument("--out", default="ui/data.json")

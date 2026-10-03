@@ -567,7 +567,9 @@ class TestDataVintageHonesty(unittest.TestCase):
         self.assertFalse(pred.injuries_available)
         text = render(pred)
         self.assertIn("no injury feed", text)
-        self.assertIn("assumed fully fit", text)
+        # bans from red cards are counted, injuries are not - and it says so
+        self.assertIn("injured players are not accounted for", text)
+        self.assertIn("only red-card suspensions are counted", text)
 
     def test_present_injury_feed_is_not_flagged(self):
         pred = self._pred(7, injuries=True)

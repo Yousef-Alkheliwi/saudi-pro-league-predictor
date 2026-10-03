@@ -26,7 +26,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import requests
 
 from ..config import CACHE_DIR
-from ..data import Dataset, Injury, Match, TeamStats
+from ..data import Appearance, Dataset, Injury, Match, Player, TeamSheet, TeamStats
 
 BASE = "https://site.web.api.espn.com/apis/site/v2/sports/soccer"
 LEAGUE = "ksa.1"
@@ -106,7 +106,8 @@ class Espn:
         return self.cache_dir / ("%s__%s.json" % (path.replace("/", "_"), digest))
 
     def get(self, path: str, params: Optional[Dict[str, str]] = None,
-            ttl: float = 3600.0, not_before: Optional[float] = None) -> dict:
+            ttl: float = 3600.0, not_before: Optional[float] = None,
+            transform=None) -> dict:
         """Cached GET. A cached copy is used while younger than `ttl`, and -
         when `not_before` is given - only if it was fetched at or after that
         moment. Offline mode uses whatever is cached."""
@@ -136,7 +137,8 @@ class Espn:
         for attempt in range(self.max_retries):
             try:
                 self._last_call = time.monotonic()
-                resp = self._session.get(url, params=params, timeout=self.timeout,
+                resp = self._session.get(url, params=self._url_params(path, params),
+                                         timeout=self.timeout,
                                          headers={"User-Agent": USER_AGENT})
                 self.calls_made += 1
                 if resp.status_code == 429:
@@ -151,6 +153,8 @@ class Espn:
             if isinstance(payload, dict) and payload.get("code") and payload.get("message"):
                 raise EspnError("ESPN rejected /%s %s: %s"
                                 % (path, params, payload["message"]))
+            if transform is not None:
+                payload = transform(payload)
             stamp = self.clock().timestamp()
             fp.write_text(json.dumps({"fetched_at": stamp, "payload": payload}),
                           encoding="utf-8")
@@ -177,6 +181,28 @@ class Espn:
             return self.get("scoreboard", params, ttl=3600.0)
         return self.get("scoreboard", params, ttl=365 * 86400.0,
                         not_before=settles.timestamp())
+
+    def summary(self, event_id: int, kickoff: datetime) -> dict:
+        """One match's line-ups, trimmed to what the squad predictor reads.
+
+        The full payload is ~300 KB, almost all commentary, news and video
+        links; the trimmed one is a few KB. A finished match's line-up is final
+        a day after kick-off, so only a copy fetched after that is kept for good.
+        """
+        settles = kickoff + timedelta(hours=26)
+        params = {"event": str(event_id), "format": SUMMARY_FORMAT}
+        if self.clock() < settles:
+            return self.get("summary", params, ttl=3600.0, transform=trim_summary)
+        return self.get("summary", params, ttl=365 * 86400.0,
+                        not_before=settles.timestamp(), transform=trim_summary)
+
+    def _url_params(self, path: str, params: Dict[str, str]) -> Dict[str, str]:
+        """`format` only versions the local cache; ESPN never sees it."""
+        return {k: v for k, v in params.items() if k != "format"}
+
+    def squad(self, team_id: int) -> dict:
+        """A club's registered squad - who is actually at the club now."""
+        return self.get("teams/%d/roster" % int(team_id), ttl=86400.0)
 
     def teams(self) -> dict:
         return self.get("teams", ttl=7 * 86400.0)
@@ -353,6 +379,174 @@ def parse_injuries(payload: dict) -> List[Injury]:
     return out
 
 
+# -------------------------------------------------------------------- line-ups
+#: assumed length of a match when turning substitution times into minutes
+MATCH_MINUTES = 90.0
+
+_KEEP_STATS = ("redCards", "yellowCards", "totalGoals", "goalAssists")
+#: bump when trim_summary keeps something new, so cached copies are refetched
+SUMMARY_FORMAT = "2"
+
+
+def _as_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value) -> list:
+    return value if isinstance(value, (list, tuple)) else []
+
+
+def trim_summary(payload: dict) -> dict:
+    """Keep the line-ups, substitutions and red cards; drop the other ~97%."""
+    payload = _as_dict(payload)
+    rosters = []
+    for block in _as_list(payload.get("rosters")):
+        block = _as_dict(block)
+        team = _as_dict(block.get("team"))
+        players = []
+        for entry in _as_list(block.get("roster")):
+            entry = _as_dict(entry)
+            athlete = _as_dict(entry.get("athlete"))
+            stats = {}
+            for item in _as_list(entry.get("stats")):
+                item = _as_dict(item)
+                if item.get("name") in _KEEP_STATS:
+                    stats[item["name"]] = item.get("value")
+            players.append({
+                "id": athlete.get("id"), "name": athlete.get("displayName"),
+                "short": athlete.get("shortName") or athlete.get("lastName"),
+                "jersey": entry.get("jersey"), "starter": entry.get("starter"),
+                "place": entry.get("formationPlace"),
+                "position": _as_dict(entry.get("position")).get("abbreviation"),
+                "stats": stats,
+            })
+        rosters.append({"team": team.get("id"), "formation": block.get("formation"),
+                        "players": players})
+    events = []
+    for e in _as_list(payload.get("keyEvents")):
+        e = _as_dict(e)
+        kind = str(_as_dict(e.get("type")).get("text") or "")
+        if "Substitution" not in kind and "Red" not in kind:
+            continue
+        events.append({
+            "kind": "sub" if "Substitution" in kind else "red",
+            "seconds": _as_dict(e.get("clock")).get("value"),
+            "team": _as_dict(e.get("team")).get("id"),
+            "players": [_as_dict(_as_dict(x).get("athlete")).get("id")
+                        for x in _as_list(e.get("participants"))],
+        })
+    return {"rosters": rosters, "events": events}
+
+
+def _int(value) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _minute(seconds) -> Optional[float]:
+    value = _num(seconds) if not isinstance(seconds, (int, float)) else float(seconds)
+    if value is None or value != value or value < 0:
+        return None
+    return min(value / 60.0, MATCH_MINUTES)
+
+
+def parse_summary(fixture_id: int, trimmed: dict
+                  ) -> Tuple[List[TeamSheet], List[Appearance]]:
+    """Line-ups for one match, with minutes worked out from substitution times.
+
+    A starter plays from 0 to the minute they are replaced or sent off; a
+    substitute from the minute they come on. Stoppage time is ignored, so a
+    full match counts as 90.
+    """
+    trimmed = _as_dict(trimmed)
+    on: Dict[int, float] = {}
+    off: Dict[int, float] = {}
+    for e in _as_list(trimmed.get("events")):
+        e = _as_dict(e)
+        minute = _minute(e.get("seconds"))
+        ids = [_int(x) for x in _as_list(e.get("players"))]
+        if minute is None:
+            continue
+        if e.get("kind") == "sub" and len(ids) >= 2:
+            if ids[0] is not None:
+                on.setdefault(ids[0], minute)
+            if ids[1] is not None:
+                off.setdefault(ids[1], minute)
+        elif e.get("kind") == "red" and ids and ids[0] is not None:
+            off[ids[0]] = min(off.get(ids[0], MATCH_MINUTES), minute)
+
+    sheets: List[TeamSheet] = []
+    apps: List[Appearance] = []
+    for block in _as_list(trimmed.get("rosters")):
+        block = _as_dict(block)
+        tid = _int(block.get("team"))
+        if tid is None:
+            continue
+        formation = block.get("formation")
+        sheets.append(TeamSheet(fixture_id, tid,
+                                formation if isinstance(formation, str) else ""))
+        for pl in _as_list(block.get("players")):
+            pl = _as_dict(pl)
+            pid = _int(pl.get("id"))
+            if pid is None:
+                continue
+            stats = _as_dict(pl.get("stats"))
+            starter = pl.get("starter") is True
+            if starter:
+                start = 0.0
+            elif pid in on:
+                start = on[pid]
+            else:
+                start = None                     # unused substitute
+            end = off.get(pid, MATCH_MINUTES)
+            minutes = max(0.0, end - start) if start is not None else 0.0
+            name = pl.get("name") if isinstance(pl.get("name"), str) else str(pid)
+            short = pl.get("short") if isinstance(pl.get("short"), str) else name
+            apps.append(Appearance(
+                fixture_id=fixture_id, team_id=tid, player_id=pid, name=name,
+                short_name=short,
+                jersey=str(pl.get("jersey")) if pl.get("jersey") is not None else "",
+                position=pl.get("position") if isinstance(pl.get("position"), str) else "",
+                starter=starter,
+                formation_place=_int(pl.get("place")) or 0,
+                minutes=round(minutes, 1),
+                red_card=(_num(stats.get("redCards")) or 0) > 0,
+                yellow_cards=int(_num(stats.get("yellowCards")) or 0),
+                goals=int(_num(stats.get("totalGoals")) or 0),
+                assists=int(_num(stats.get("goalAssists")) or 0),
+            ))
+    return sheets, apps
+
+
+#: squad-list position letters -> the names the availability model weights by
+_SQUAD_POSITION = {"G": "Goalkeeper", "D": "Defender", "M": "Midfielder",
+                   "F": "Attacker"}
+
+
+def parse_squad(team_id: int, payload: dict) -> List[Player]:
+    """The registered squad. Some ESPN rosters group athletes by position."""
+    flat = []
+    for item in _as_list(_as_dict(payload).get("athletes")):
+        item = _as_dict(item)
+        if "items" in item:
+            flat.extend(_as_list(item.get("items")))
+        else:
+            flat.append(item)
+    out: List[Player] = []
+    for a in flat:
+        a = _as_dict(a)
+        pid = _int(a.get("id"))
+        if pid is None:
+            continue
+        letter = _as_dict(a.get("position")).get("abbreviation")
+        name = a.get("displayName") if isinstance(a.get("displayName"), str) else str(pid)
+        out.append(Player(player_id=pid, team_id=team_id, name=name,
+                          position=_SQUAD_POSITION.get(letter)))
+    return out
+
+
 # -------------------------------------------------------------------- fetching
 def _months_ahead(now: datetime, n: int) -> Tuple[int, int]:
     total = now.year * 12 + (now.month - 1) + n
@@ -365,8 +559,70 @@ def season_months(season: int) -> List[Tuple[int, int]]:
             + [(season + 1, m) for m in range(1, 8)])
 
 
+#: how many of a club's most recent line-ups its players' minutes are counted
+#: over - the importance weights the availability model uses
+MINUTES_WINDOW = 10
+
+
+def fetch_lineups(client, ds: Dataset, seasons: Iterable[int], log=print) -> None:
+    """Line-ups for every finished match in `seasons`, plus each current club's
+    registered squad with its players' recent minutes."""
+    wanted = set(seasons)
+    played = [m for m in ds.played_matches if m.season in wanted]
+    fetched = 0
+    for m in sorted(played, key=lambda x: x.dt, reverse=True):
+        try:
+            sheets, apps = parse_summary(m.fixture_id,
+                                         client.summary(m.fixture_id, m.dt))
+        except EspnError as exc:
+            log("  line-up for %s unavailable: %s" % (m.fixture_id, exc))
+            continue
+        # a line-up is only usable if it names the two clubs in the fixture
+        sheets = [x for x in sheets if x.team_id in (m.home_id, m.away_id)]
+        apps = [a for a in apps if a.team_id in (m.home_id, m.away_id)]
+        if not apps:
+            continue
+        ds.team_sheets.extend(sheets)
+        ds.appearances.extend(apps)
+        fetched += 1
+    log("line-ups: %d matches, %d player appearances" % (fetched, len(ds.appearances)))
+
+    current = max(wanted) if wanted else None
+    clubs = sorted({t for m in ds.matches if m.season == current
+                    for t in (m.home_id, m.away_id)})
+    by_fixture = ds.appearances_by_fixture()
+    dated = sorted(ds.played_matches, key=lambda x: x.dt, reverse=True)
+    for tid in clubs:
+        try:
+            members = parse_squad(tid, client.squad(tid))
+        except EspnError as exc:
+            log("  squad for %s unavailable: %s" % (tid, exc))
+            continue
+        recent = [m for m in dated if tid in (m.home_id, m.away_id)
+                  and any(a.team_id == tid for a in by_fixture.get(m.fixture_id, []))]
+        recent = recent[:MINUTES_WINDOW]
+        minutes: Dict[int, float] = {}
+        apps_count: Dict[int, int] = {}
+        goals: Dict[int, int] = {}
+        for m in recent:
+            for a in by_fixture.get(m.fixture_id, []):
+                if a.team_id != tid:
+                    continue
+                minutes[a.player_id] = minutes.get(a.player_id, 0.0) + a.minutes
+                if a.minutes > 0:
+                    apps_count[a.player_id] = apps_count.get(a.player_id, 0) + 1
+                goals[a.player_id] = goals.get(a.player_id, 0) + a.goals
+        for pl in members:
+            pl.minutes = minutes.get(pl.player_id, 0.0)
+            pl.appearances = float(apps_count.get(pl.player_id, 0))
+            pl.goals = float(goals.get(pl.player_id, 0))
+        ds.players.extend(members)
+    log("squads: %d players across %d clubs" % (len(ds.players), len(clubs)))
+
+
 def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
-                  with_logos: bool = True, log=print) -> Dataset:
+                  with_logos: bool = True, with_lineups: bool = True,
+                  lineup_seasons: int = 2, managers=None, log=print) -> Dataset:
     now = getattr(client, "clock", _utcnow)()
     current = season_of(now)
     if seasons is None:
@@ -437,6 +693,21 @@ def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
             "  (ESPN publishes none for this league)" if not ds.injuries else ""))
     except EspnError as exc:
         log("injuries unavailable: %s" % exc)
+
+    if with_lineups and hasattr(client, "summary") and hasattr(client, "squad"):
+        recent_seasons = sorted({m.season for m in ds.played_matches})[-lineup_seasons:]
+        try:
+            fetch_lineups(client, ds, recent_seasons, log=log)
+        except Exception as exc:                      # pragma: no cover
+            log("line-ups skipped: %s" % exc)
+        if managers is not None:
+            from .wikipedia import fetch_managers
+            try:
+                # one season earlier, to know who was in charge as the window opens
+                fetch_managers(managers, ds, [min(recent_seasons) - 1] + recent_seasons,
+                               log=log)
+            except Exception as exc:                  # pragma: no cover
+                log("managers skipped: %s" % exc)
 
     if with_logos:
         # badges are cosmetic; never let them take the data fetch down with them

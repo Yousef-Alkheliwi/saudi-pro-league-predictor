@@ -11,8 +11,8 @@ Inputs the model uses, as asked for:
 | Input | How it is used |
 |---|---|
 | Previous matchups | Time-weighted head-to-head, applied as a *residual* bias net of what the ratings already imply, so a rivalry effect is not double-counted |
-| General squad | Each player's share of team minutes this season sets how much their absence matters |
-| Current injuries | Live injury list → importance-weighted availability index, split into attack and defence effects by position |
+| General squad | Each club's registered squad and its players' minutes over the last 10 line-ups set how much an absence matters — and drive the **predicted XI** |
+| Current injuries | Importance-weighted availability index, split into attack and defence by position. No free injury feed exists for this league, so today this counts **red-card suspensions** read from the line-ups; an injury list from a paid feed plugs into the same path |
 | Rest days | Days since each club's last match **in any competition** (league, King's Cup, AFC Champions League), fitted as a coefficient |
 | Home advantage | Fitted from the league's own results, not assumed |
 
@@ -133,6 +133,65 @@ for hosting somewhere that supplies its own HTML skeleton.
 
 Re-run all three commands after each `fetch` to refresh the page.
 
+## Squad predictor
+
+```bash
+.venv/bin/python -m spl.cli lineup --team hilal       # likely XI for their next match
+.venv/bin/python -m spl.cli lineup --evaluate         # how often it is right
+```
+
+The likely starting XI for each club's next match, from each player's
+**standing with the current manager** and his **recent performance**. Line-ups
+come from the same free source as the results — formation, each starter's slot
+and position, substitutions, cards, goals and assists — and each club's
+manager on any date comes from the managerial-changes tables on Wikipedia's
+season pages, since no free football API publishes coaches for this league.
+
+Each player gets a chance of starting from a logistic model fitted on every
+recorded line-up. What it learned, as odds of starting:
+
+| signal | effect |
+|---|---|
+| share of starts under the **current manager** (0 → 1) | ×10.8 |
+| started last week, but for a **different manager** | ×0.31 |
+| started last week | ×3.6 |
+| came on as a substitute last week | ×3.0 |
+| **taken off before the hour** last week | ×0.17 |
+| goals + assists per 90, recent outings (per 1) | ×1.5 |
+| started a defeat last week | ×0.81 |
+
+The best goalkeeper and ten outfielders make the XI, kept to the balance of
+defence, midfield and attack the side used last time. A player **sent off in
+the club's last match** is suspended for the next fixture: never picked, and
+counted as absent by the goal model.
+
+Replayed over 675 past line-ups, with the model cross-validated in
+chronological blocks so no line-up is predicted by a model that saw it:
+
+| | starters named right |
+|---|---|
+| **manager preference + form model** | **8.80 of 11** |
+| last week's XI, less suspensions | 8.76 of 11 |
+| repeat last week's XI | 8.70 of 11 |
+
+The gain is real but modest (t = 2.1). It is largest just after a manager
+change, where a new man reshapes the side — about a third of a player per
+line-up, though there are too few such matches in the data to be sure. The
+model's chances are well calibrated: players given 90% or more started 90% of
+the time. Ideas that did not help were left out, and are recorded in
+[spl/squad.py](spl/squad.py).
+
+It cannot see injuries. An injured player drops out as his recent record
+fades; a regular missing from the last squad is flagged *missed last squad*
+rather than removed, since nobody publishes whether he was injured or rested.
+The registered squad list keeps players who have left the club out of the XI.
+
+On the page, both sides' XIs are drawn on pitches in the manager's usual
+shape, with the manager's name and tenure, and a dashed ring on anyone under
+60% to start.
+
+![Predicted line-ups for Al Hilal and Al Ittihad on two pitches](docs/img/lineups.png)
+
 ## How it works
 
 **Goals.** A Dixon-Coles model. Each side's goal rate is
@@ -186,7 +245,7 @@ ratings can otherwise memorise results. It reports log loss, RPS, Brier, accurac
 goal/shot/possession error and a calibration table, against a league base-rate
 baseline. Run it on your own snapshot before trusting any number here.
 
-`.venv/bin/python -m unittest discover -s tests -t .` runs 163 tests. Most assert
+`.venv/bin/python -m unittest discover -s tests -t .` runs 312 tests. Most assert
 recovery: a league is simulated from known parameters and the fit has to find them
 back (home advantage recovers to within 0.006 of truth averaged over seeds, attack
 ratings correlate ~0.93).
@@ -240,10 +299,9 @@ and more current.
   of the budget for a named loss of accuracy.
 - **No free injury feed exists for this league.** ESPN publishes an injuries
   endpoint but returns an empty list for the Saudi Pro League, and API-Football
-  carries injuries only on a season its free tier cannot reach. So squads show as
-  100% available because nothing was returned, not because everyone is fit — every
-  report says so explicitly rather than implying full fitness. The injury model is
-  built and tested; it is waiting on a feed.
+  carries injuries only on a season its free tier cannot reach. Red-card
+  suspensions are read from the line-ups and counted; injuries are not, and
+  every report says so.
 - **No lineup or transfer-window awareness.** A club that sold its top scorer looks
   unchanged until enough matches accumulate. Minutes-weighted ratings adapt within a
   few weeks, not immediately.
@@ -273,7 +331,9 @@ LICENSE                        MIT
 ui/src/                        page sources: styles.css, page.html, app.js
 ui/build.py                    builds ui/index.html (standalone) + artifact.html
 spl/export.py                  precompute every pairing as JSON for the page
-spl/providers/espn.py          free data client: no key, month-at-a-time, cached
+spl/providers/espn.py          free data client: results, box scores, line-ups, squads
+spl/squad.py                   squad predictor: start model, suspensions, replay accuracy
+spl/providers/wikipedia.py     managers over time, from Wikipedia season pages
 spl/providers/apifootball.py   keyed client: disk cache, TTLs, request budget
 spl/data.py                    normalise payloads; Dataset save/load; name matching
 spl/features.py                rest, congestion, availability, head-to-head, form

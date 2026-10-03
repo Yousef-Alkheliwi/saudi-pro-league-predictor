@@ -209,7 +209,8 @@ def _data_warnings(pred: Prediction) -> List[str]:
         out.append("The API subscription does not cover recent seasons, so no")
         out.append("current-season data could be fetched.")
     if not pred.injuries_available:
-        out.append("No injury data available - every squad is treated as fully fit.")
+        out.append("No injury feed - injured players are not accounted for (red-card"
+                   " suspensions are).")
     unrated = [name for tid, name in ((pred.home_id, pred.home_name),
                                       (pred.away_id, pred.away_name))
                if tid not in pred.ratings.attack]
@@ -329,8 +330,8 @@ def render(pred: Prediction, verbose: bool = False) -> str:
 
     ah, aa = f.availability_home, f.availability_away
     if not pred.injuries_available:
-        L.append("  Availability   no injury feed on this plan - both squads assumed "
-                 "fully fit")
+        L.append("  Availability   no injury feed - only red-card suspensions are "
+                 "counted")
     L.append("  Availability   %s %.0f%% of weighted minutes (%s)"
              % (pred.home_name[:12], 100 * ah.overall_available, ah.note))
     if ah.out:

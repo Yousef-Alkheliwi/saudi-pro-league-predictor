@@ -67,6 +67,45 @@ class Injury:
     type: str          # "Missing Fixture" / "Questionable"
     reason: str
     fixture_date: Optional[str] = None
+    #: "feed" for an injury list from a provider; "suspension" for an absence
+    #: derived from line-ups (sent off in the club's previous match). Kept apart
+    #: so the report never claims injuries are covered when only bans are.
+    origin: str = "feed"
+
+
+@dataclass
+class Appearance:
+    """One player's part in one match, from the published line-up."""
+    fixture_id: int
+    team_id: int
+    player_id: int
+    name: str
+    short_name: str = ""
+    jersey: str = ""
+    position: str = ""            # ESPN abbreviation: G, CD-L, RB, CM-R, CF ...
+    starter: bool = False
+    formation_place: int = 0      # 1-11 for starters, 0 on the bench
+    minutes: float = 0.0
+    red_card: bool = False
+    yellow_cards: int = 0
+    goals: int = 0
+    assists: int = 0
+
+
+@dataclass
+class ManagerSpell:
+    """A club's manager from `start` until the next spell begins."""
+    team_id: int
+    name: str
+    start: str                    # ISO-8601, UTC
+
+
+@dataclass
+class TeamSheet:
+    """A club's shape in one match."""
+    fixture_id: int
+    team_id: int
+    formation: str = ""
 
 
 @dataclass
@@ -104,6 +143,11 @@ class Dataset:
     stats: List[TeamStats] = field(default_factory=list)
     injuries: List[Injury] = field(default_factory=list)
     players: List[Player] = field(default_factory=list)
+    #: published line-ups, for the squad predictor
+    appearances: List[Appearance] = field(default_factory=list)
+    team_sheets: List[TeamSheet] = field(default_factory=list)
+    #: each club's managers over time, for manager-specific selection habits
+    managers: List[ManagerSpell] = field(default_factory=list)
 
     # ---------------------------------------------------------------- persistence
     def save(self, path: Optional[Path] = None) -> Path:
@@ -122,6 +166,9 @@ class Dataset:
             "stats": [asdict(s) for s in self.stats],
             "injuries": [asdict(i) for i in self.injuries],
             "players": [asdict(p) for p in self.players],
+            "appearances": [asdict(a) for a in self.appearances],
+            "team_sheets": [asdict(t) for t in self.team_sheets],
+            "managers": [asdict(m) for m in self.managers],
         }
         path.write_text(json.dumps(blob), encoding="utf-8")
         return path
@@ -147,6 +194,9 @@ class Dataset:
             stats=[TeamStats(**s) for s in blob["stats"]],
             injuries=[Injury(**i) for i in blob["injuries"]],
             players=[Player(**p) for p in blob["players"]],
+            appearances=[Appearance(**a) for a in blob.get("appearances", [])],
+            team_sheets=[TeamSheet(**t) for t in blob.get("team_sheets", [])],
+            managers=[ManagerSpell(**m) for m in blob.get("managers", [])],
         )
 
     # ---------------------------------------------------------------- convenience
@@ -184,6 +234,31 @@ class Dataset:
         for inj in self.injuries:
             out.setdefault(inj.team_id, []).append(inj)
         return out
+
+    def appearances_by_fixture(self) -> Dict[int, List[Appearance]]:
+        # Memoised: the export builds features for hundreds of pairings, each
+        # looking up line-ups. Keyed on the list's identity and length, so
+        # appending or replacing appearances invalidates it.
+        key = (id(self.appearances), len(self.appearances))
+        cached = getattr(self, "_by_fixture", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        out: Dict[int, List[Appearance]] = {}
+        for a in self.appearances:
+            out.setdefault(a.fixture_id, []).append(a)
+        self._by_fixture = (key, out)
+        return out
+
+    def manager_at(self, team_id: int, when: datetime) -> Optional[ManagerSpell]:
+        """Who was managing `team_id` at `when`, if known."""
+        best = None
+        for spell in self.managers:
+            if spell.team_id != team_id:
+                continue
+            start = _parse_dt(spell.start)
+            if start <= when and (best is None or start >= _parse_dt(best.start)):
+                best = spell
+        return best
 
     def players_by_team(self) -> Dict[int, List[Player]]:
         out: Dict[int, List[Player]] = {}

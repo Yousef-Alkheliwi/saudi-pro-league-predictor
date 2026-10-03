@@ -80,9 +80,10 @@ if (META.warnings && META.warnings.length){
       + " moved on since.</p>");
   }
   if (!META.injuries_available){
-    parts.push("<p><strong>Every squad here is treated as fully fit.</strong> No "
-      + "free injury feed exists for this league, so nothing was returned \u2014 "
-      + "which is not the same as everyone being available.</p>");
+    parts.push("<p><strong>Injured players are not accounted for.</strong> No "
+      + "free injury feed exists for this league. Suspensions are: a player sent "
+      + "off in his club\u2019s last match is left out of the predicted XI and "
+      + "counted as absent in the prediction.</p>");
   }
   parts.push("<p>Everything else is real: " + META.n_matches.toLocaleString()
     + " actual Saudi Pro League matches and " + META.box_score_rows
@@ -203,6 +204,106 @@ function paintBadge(el, club){
     el.classList.remove("hasimg");
     el.textContent = initials(club.name);
   }
+}
+
+/* Player names come from a third-party feed: never inject them as HTML. */
+function esc(text){
+  return String(text == null ? "" : text).replace(/[&<>"']/g, function(c){
+    return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
+  });
+}
+
+/* ---------- predicted line-ups ---------- */
+function pitchHTML(xi){
+  var rows = {};
+  xi.forEach(function(p){ (rows[p.row] = rows[p.row] || []).push(p); });
+  var keys = Object.keys(rows).map(Number).sort(function(a, b){ return a - b; });
+  var outfield = keys.filter(function(r){ return r > 0; });
+  var html = '<div class="mid"></div><div class="circ"></div>';
+  keys.forEach(function(r){
+    var line = rows[r].slice().sort(function(a, b){ return a.lat - b.lat; });
+    // keeper at the foot of the pitch; outfield lines spread up towards attack
+    var y = r === 0 ? 91
+      : 74 - (outfield.indexOf(r) * (60 / Math.max(1, outfield.length - 1)));
+    if (outfield.length === 1 && r > 0) y = 50;
+    line.forEach(function(p, i){
+      var x = (i + 1) * 100 / (line.length + 1);
+      // dashed: the model gives him under 60% to start (or, without a model,
+      // he started fewer than half of the recent line-ups)
+      var unsure = p.p != null ? p.p < 0.6 : (p.of && p.starts * 2 < p.of);
+      // each name box gets its share of the row, less a gap - a fixed width
+      // let four names collide at phone width
+      var w = 100 / (line.length + 1) - 1.5;
+      html += '<div class="pl' + (unsure ? " unsure" : "") + '" style="left:'
+        + x.toFixed(1) + '%;top:' + y.toFixed(1) + '%;width:' + w.toFixed(1)
+        + '%" title="' + esc(p.name)
+        + " \u00b7 " + esc(p.pos || "?") + " \u00b7 started " + p.starts + " of "
+        + p.of + (p.p != null ? " \u00b7 " + Math.round(100 * p.p) + "% to start" : "")
+        + '"><span class="kit">' + esc(p.jersey || "\u2013")
+        + '</span><span class="who">' + esc(p.short || p.name) + "</span></div>";
+    });
+  });
+  return html;
+}
+
+function lineupCard(el, club, side){
+  var lu = club.lineup;
+  el.className = "card xi-card " + side;
+  if (!lu || !lu.xi || !lu.xi.length){
+    el.innerHTML = '<div class="xi-top"><span class="nm">' + esc(club.name)
+      + '</span></div><p class="sub">No line-ups recorded for this club.</p>';
+    return;
+  }
+  var notes = "";
+  (lu.absences || []).forEach(function(a){
+    var ban = a.kind === "suspended";
+    notes += '<div class="row"><span class="tag ' + (ban ? "ban" : "miss") + '">'
+      + (ban ? "SUSPENDED" : "MISSED LAST SQUAD") + "</span><b>" + esc(a.name)
+      + "</b> \u2013 " + esc(a.reason) + "</div>";
+  });
+  if (lu.bench && lu.bench.length){
+    notes += '<div class="row"><b>Next in line:</b> ' + lu.bench.map(function(p){
+      return esc(p.short || p.name) + " ("
+        + (p.p != null ? Math.round(100 * p.p) + "%" : p.starts + "/" + p.of) + ")";
+    }).join(", ") + "</div>";
+  }
+  el.innerHTML = '<div class="xi-top">' + crestTag(club, "")
+    + '<span class="nm">' + esc(club.name)
+    + (lu.manager ? '<span class="mgr">' + esc(lu.manager)
+        + (lu.manager_since ? " \u00b7 since " + esc(lu.manager_since) : "") + "</span>" : "")
+    + "</span>"
+    + (lu.formation ? '<span class="fm">' + esc(lu.formation) + "</span>" : "")
+    + '</div><div class="pitch" role="img" aria-label="'
+    + esc(club.name + " predicted XI: " + lu.xi.map(function(p){ return p.name; }).join(", "))
+    + '">' + pitchHTML(lu.xi) + '</div><div class="xi-notes">' + notes + "</div>";
+}
+
+function buildLineups(home, away, fixture){
+  var sec = $("xisec");
+  if (!home.lineup && !away.lineup){ sec.hidden = true; return; }
+  sec.hidden = false;
+  lineupCard($("xi-home"), home, "home");
+  lineupCard($("xi-away"), away, "away");
+  var acc = META.lineup_accuracy;
+  var lu = home.lineup || away.lineup;
+  var modelled = lu && lu.method === "model";
+  var text = (fixture ? "For this match. " : "Each side\u2019s XI is for its own next match. ")
+    + (modelled
+      ? "Chosen from each player\u2019s standing with the current manager and his recent "
+        + "form \u2014 goals, assists, whether he was taken off early or came on \u2014 "
+        + "with the weights fitted on past line-ups."
+      : "Last week\u2019s XI, less known absences, gaps filled from the last "
+        + (lu ? lu.matches_used : 8) + " line-ups.");
+  if (acc){
+    text += " Replayed over " + acc.n + " past line-ups it names " + acc.right.toFixed(2)
+      + " of 11 starters correctly; repeating last week\u2019s XI names "
+      + acc.baseline.toFixed(2) + ".";
+  }
+  text += modelled ? " A dashed ring marks a player under 60% to start."
+                   : " A dashed ring marks a player who started fewer than half of them.";
+  text += " A player sent off last time is left out; no injury feed exists for this "
+    + "league, so injured players are not.";
+  $("xi-sub").textContent = text;
 }
 
 function crestTag(club, cls){
@@ -426,6 +527,7 @@ function render(){
       + "<span>Not a scheduled fixture \u2014 how the model rates the matchup.</span>";
   }
   showFixtureStrip(key);
+  buildLineups(home, away, fixture);
 
   buildGrid(p, home.name, away.name);
   var shown = p.grid.reduce(function(t, row){

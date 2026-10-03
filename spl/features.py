@@ -268,6 +268,14 @@ def build_features(ds: Dataset, home_id: int, away_id: int, kickoff: datetime,
     sched = ds.schedule_matches         # fatigue: all competitions
     injuries = ds.injuries_by_team()
     players = ds.players_by_team()
+    # Bans from red cards are known from the line-ups alone, so they count as
+    # absences even without an injury feed.
+    if ds.appearances:
+        from .squad import suspensions
+        for tid in (home_id, away_id):
+            banned = suspensions(ds, tid, kickoff)
+            if banned:
+                injuries[tid] = list(injuries.get(tid, [])) + banned
     return MatchFeatures(
         home_id=home_id,
         away_id=away_id,
