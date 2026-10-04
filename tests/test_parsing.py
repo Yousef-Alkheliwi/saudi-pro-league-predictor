@@ -424,10 +424,6 @@ class TestFetchPipeline(unittest.TestCase):
             self.assertEqual(len(back.other_matches), len(ds.other_matches))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestRateLimiting(unittest.TestCase):
     """The free tier allows 10 calls/minute; exceeding it 429-storms."""
 
@@ -660,3 +656,7 @@ class TestRoundTripCompleteness(unittest.TestCase):
             self.assertEqual(old.logos, {})
             self.assertFalse(old.plan_limited)
             self.assertEqual(old.other_matches, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

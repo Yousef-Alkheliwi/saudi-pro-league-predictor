@@ -355,7 +355,7 @@ def cmd_status(args) -> int:
         print(exc)
         ds = None
     if ds:
-        print("dataset      %s" % args.dataset or DATASET_PATH)
+        print("dataset      %s" % (args.dataset or DATASET_PATH))
         print("snapshot     %s" % ds.fetched_at)
         print("source       %s" % ds.source)
         print("league id    %s" % ds.league_id)

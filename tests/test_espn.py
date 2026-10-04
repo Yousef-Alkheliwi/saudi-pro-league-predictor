@@ -573,3 +573,7 @@ class TestSnapshotTime(unittest.TestCase):
         c._note(datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
         self.assertEqual(c.newest_fetch,
                          datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -213,10 +213,6 @@ class TestPageBuild(unittest.TestCase):
         self.assertNotIn("100vh", self.standalone)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestScheduledFixtures(unittest.TestCase):
     """Choosing a club must land on their real next match."""
 
@@ -441,3 +437,7 @@ class TestScheduledFixturesUseTheirOwnKickoff(unittest.TestCase):
         self.assertAlmostEqual(
             other["p"]["home"] + other["p"]["draw"] + other["p"]["away"],
             1.0, places=3)
+
+
+if __name__ == "__main__":
+    unittest.main()

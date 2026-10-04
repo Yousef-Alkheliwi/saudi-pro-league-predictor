@@ -514,10 +514,6 @@ class TestPersistence(unittest.TestCase):
             Dataset.load("/nonexistent/path/ds.json")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestDataVintageHonesty(unittest.TestCase):
     """Stale ratings must be labelled as such, loudly."""
 
@@ -1142,3 +1138,7 @@ class TestBacktestParameterValidation(unittest.TestCase):
             cli.Dataset.load = original
         self.assertEqual(code, 1)
         self.assertIn("cannot backtest", err.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()

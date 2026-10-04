@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -86,6 +86,28 @@ def _pairing(pred: Prediction) -> dict:
         },
         "conf": pred.confidence(),
     }
+
+
+def club_lineups(ds: Dataset, team_id: int, next_kickoff: Optional[datetime]
+                 ) -> Tuple[Optional[dict], Optional[dict]]:
+    """A club's predicted XI for its next fixture, and - only when that XI
+    leaves out a banned player - the XI for any fixture after it.
+
+    A red-card ban falls on the next match alone, so a later fixture on the
+    page must not show the player as suspended. Everything else the pick reads
+    (the line-ups so far, the manager) is the same for every future date, so
+    these two cover every scheduled fixture.
+    """
+    from .cli import lineup_json
+    from .squad import predict_lineup
+    lineup = predict_lineup(ds, team_id, next_kickoff)
+    if lineup is None:
+        return None, None
+    later = None
+    if next_kickoff and any(a.kind == "suspended" for a in lineup.absences):
+        after = predict_lineup(ds, team_id, next_kickoff + timedelta(days=1))
+        later = lineup_json(after) if after else None
+    return lineup_json(lineup), later
 
 
 def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
@@ -190,15 +212,16 @@ def build_payload(ds: Dataset, predictor: Optional[Predictor] = None,
     # falls on that match only, so the date matters.
     lineup_accuracy = None
     if ds.appearances:
-        from .cli import lineup_json
-        from .squad import evaluate, predict_lineup
+        from .squad import evaluate
         next_kickoff = {}
         for f in fixtures:
             for tid in (f["home"], f["away"]):
                 next_kickoff.setdefault(tid, datetime.fromisoformat(f["kickoff"]))
         for club in clubs:
-            lineup = predict_lineup(ds, club["id"], next_kickoff.get(club["id"]))
-            club["lineup"] = lineup_json(lineup) if lineup else None
+            lineup, later = club_lineups(ds, club["id"], next_kickoff.get(club["id"]))
+            club["lineup"] = lineup
+            if later:
+                club["lineup_later"] = later
         ev = evaluate(ds)
         lineup_accuracy = {"n": ev.n, "right": round(ev.mean_correct, 2),
                            "rule": round(ev.rule_correct, 2),

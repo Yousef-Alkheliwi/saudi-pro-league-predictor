@@ -200,10 +200,6 @@ class TestStartModel(unittest.TestCase):
         self.assertTrue(ev.calibration)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestKeepShape(unittest.TestCase):
     """Picking the ten most likely outfielders can name five defenders for a
     back four; the XI keeps last match's balance of the lines instead."""
@@ -234,3 +230,7 @@ class TestKeepShape(unittest.TestCase):
             ranked.append(p)
         self.assertEqual([p.player_id for p in S._keep_shape(ranked, [], {}, {})],
                          list(range(10)))
+
+
+if __name__ == "__main__":
+    unittest.main()

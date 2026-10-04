@@ -348,9 +348,30 @@ class TestPageAndExport(unittest.TestCase):
         app = (self.ROOT / "ui" / "src" / "app.js").read_text()
         self.assertIn("100 / (line.length + 1)", app)
 
+    def test_a_later_fixture_has_the_banned_player_back(self):
+        """The page showed a ban on every scheduled fixture, weeks ahead too,
+        while the goal model rightly had the player back after one match."""
+        from spl.export import club_lineups
+        ds, last = league(red_in=(7, 13), scheduled_after=(7, 14))
+        nxt, later = club_lineups(ds, HOME, last + timedelta(days=7))
+        self.assertNotIn(13, {p["id"] for p in nxt["xi"]})
+        self.assertIn("suspended", {a["kind"] for a in nxt["absences"]})
+        self.assertIn(13, {p["id"] for p in later["xi"]})
+        self.assertNotIn("suspended", {a["kind"] for a in later["absences"]})
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_no_second_line_up_without_a_ban(self):
+        from spl.export import club_lineups
+        ds, last = league(scheduled_after=(7, 14))
+        nxt, later = club_lineups(ds, HOME, last + timedelta(days=7))
+        self.assertEqual(len(nxt["xi"]), 11)
+        self.assertIsNone(later)
+
+    def test_page_picks_the_line_up_for_the_fixture_shown(self):
+        app = (self.ROOT / "ui" / "src" / "app.js").read_text()
+        block = app[app.index("function lineupFor"):app.index("function buildLineups")]
+        self.assertIn("NEXT_OF[club.id] !== fixture", block)
+        self.assertIn("club.lineup_later", block)
+        self.assertNotIn('"Next fixture</span>', app)   # only for a club's first match
 
 
 class TestReserveKeeper(unittest.TestCase):
@@ -417,3 +438,7 @@ class TestReserveKeeper(unittest.TestCase):
                 a.minutes = 25.0
         lu = S.predict_lineup(ds, HOME, last + timedelta(days=7))
         self.assertIn(23, {p.player_id for p in lu.xi})
+
+
+if __name__ == "__main__":
+    unittest.main()

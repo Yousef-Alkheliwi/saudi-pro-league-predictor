@@ -246,8 +246,7 @@ function pitchHTML(xi){
   return html;
 }
 
-function lineupCard(el, club, side){
-  var lu = club.lineup;
+function lineupCard(el, club, side, lu){
   el.className = "card xi-card " + side;
   if (!lu || !lu.xi || !lu.xi.length){
     el.innerHTML = '<div class="xi-top"><span class="nm">' + esc(club.name)
@@ -278,14 +277,23 @@ function lineupCard(el, club, side){
     + '">' + pitchHTML(lu.xi) + '</div><div class="xi-notes">' + notes + "</div>";
 }
 
+// A red-card ban falls on a club's next match only. For a fixture after that
+// the export sends the XI with the banned player back in (`lineup_later`, set
+// only when there is a ban to serve).
+function lineupFor(club, fixture){
+  if (fixture && NEXT_OF[club.id] !== fixture && club.lineup_later) return club.lineup_later;
+  return club.lineup;
+}
+
 function buildLineups(home, away, fixture){
   var sec = $("xisec");
   if (!home.lineup && !away.lineup){ sec.hidden = true; return; }
   sec.hidden = false;
-  lineupCard($("xi-home"), home, "home");
-  lineupCard($("xi-away"), away, "away");
+  var hl = lineupFor(home, fixture), al = lineupFor(away, fixture);
+  lineupCard($("xi-home"), home, "home", hl);
+  lineupCard($("xi-away"), away, "away", al);
   var acc = META.lineup_accuracy;
-  var lu = home.lineup || away.lineup;
+  var lu = hl || al;
   var modelled = lu && lu.method === "model";
   var text = (fixture ? "For this match. " : "Each side\u2019s XI is for its own next match. ")
     + (modelled
@@ -301,8 +309,8 @@ function buildLineups(home, away, fixture){
   }
   text += modelled ? " A dashed ring marks a player under 60% to start."
                    : " A dashed ring marks a player who started fewer than half of them.";
-  text += " A player sent off last time is left out; no injury feed exists for this "
-    + "league, so injured players are not.";
+  text += " A player sent off last time is left out of his club’s next match; no "
+    + "injury feed exists for this league, so injured players are not.";
   $("xi-sub").textContent = text;
 }
 
@@ -519,7 +527,10 @@ function render(){
   var fixture = FIXTURE_AT[key];
   var ko = $("herometa");
   if (fixture){
-    ko.innerHTML = '<span class="pill">Next fixture</span><span>'
+    // the rail runs weeks ahead: only a club's first match is its next one
+    var isNext = NEXT_OF[hid] === fixture || NEXT_OF[aid] === fixture;
+    ko.innerHTML = '<span class="pill">' + (isNext ? "Next fixture" : "Scheduled")
+      + '</span><span>'
       + fixture.label + (fixture.venue ? " \u00b7 " + fixture.venue : "")
       + "</span>";
   } else {
