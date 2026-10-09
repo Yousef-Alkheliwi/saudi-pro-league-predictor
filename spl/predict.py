@@ -256,6 +256,10 @@ def render(pred: Prediction, verbose: bool = False) -> str:
     L.append("=" * W)
     L.append("  %s  vs  %s" % (pred.home_name.upper(), pred.away_name.upper()))
     when = pred.kickoff.strftime("%a %d %b %Y  %H:%M UTC")
+    if pred.fixture_id is None:
+        # Not on the schedule: the date is only when rest days are read, and
+        # printed as a kickoff time it reads like a real match.
+        when = "not a scheduled fixture - rated as of %s" % pred.kickoff.strftime("%d %b %Y")
     site = pred.venue or ("neutral venue" if f.neutral_venue else "home venue")
     L.append("  %s   |   %s" % (when, site))
     L.append("=" * W)

@@ -250,6 +250,18 @@ def _display_name(side: dict, fallback: int) -> str:
     return name if isinstance(name, str) and name else str(fallback)
 
 
+def event_badges(event: dict) -> Dict[int, str]:
+    """Badge URLs from a match listing's two team blocks, by club id."""
+    out: Dict[int, str] = {}
+    comps = _as_list(_as_dict(event).get("competitions"))
+    for side in _as_list(_as_dict(comps[0] if comps else {}).get("competitors")):
+        team = _as_dict(_as_dict(side).get("team"))
+        tid, url = _int(team.get("id")), team.get("logo")
+        if tid is not None and isinstance(url, str) and url.startswith("http"):
+            out[tid] = url
+    return out
+
+
 def parse_event(event: dict) -> Optional[Tuple[Match, List[TeamStats]]]:
     """One ESPN event -> a Match plus whatever box score came with it.
 
@@ -347,6 +359,13 @@ def parse_event(event: dict) -> Optional[Tuple[Match, List[TeamStats]]]:
                     found = True
         if found:
             stats.append(rec)
+    # For a match it did not cover, ESPN fills the box score with zeros: no
+    # shots, no corners and 0% possession for both sides, which no played
+    # match can produce. Kept, it reads as two sides that neither shot nor
+    # had the ball, and drags both clubs' shot and possession ratings down.
+    values = [getattr(s, f) for s in stats for f in STAT_MAP.values()]
+    if stats and not any(v for v in values if v is not None):
+        stats = []
     return match, stats
 
 
@@ -639,6 +658,7 @@ def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
     # listing; otherwise the later listing wins, since it carries the current
     # date of a rescheduled match.
     kept: Dict[int, Tuple[Match, List[TeamStats]]] = {}
+    badges: Dict[int, str] = {}
     for season in seasons:
         for year, month in season_months(season):
             # look a couple of months ahead so upcoming fixtures are picked up;
@@ -651,6 +671,7 @@ def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
                 log("  %04d-%02d unavailable: %s" % (year, month, exc))
                 continue
             for event in payload.get("events") or []:
+                badges.update(event_badges(event))
                 try:
                     parsed = parse_event(event)
                 except Exception as exc:          # pragma: no cover - defensive
@@ -712,7 +733,7 @@ def fetch_dataset(client: Espn, seasons: Optional[Iterable[int]] = None,
     if with_logos:
         # badges are cosmetic; never let them take the data fetch down with them
         try:
-            ds.logos = fetch_logos(client, set(ds.teams), log=log)
+            ds.logos = fetch_logos(client, set(ds.teams), log=log, fallback=badges)
         except Exception as exc:                      # pragma: no cover
             log("badges skipped: %s" % exc)
 
@@ -752,11 +773,13 @@ def _shrink_png(raw: bytes, px: int = LOGO_PX) -> bytes:
             return raw
 
 
-def fetch_logos(client: Espn, team_ids, log=print) -> Dict[int, str]:
+def fetch_logos(client: Espn, team_ids, log=print,
+                fallback: Optional[Dict[int, str]] = None) -> Dict[int, str]:
     """Club badges as data: URIs, so the built page stays a single file.
 
     Cached on disk alongside the JSON, because these never change and each one
-    is a separate download.
+    is a separate download. `fallback` is badge URLs from the match listings,
+    used for a club the team list has none for.
     """
     import base64
 
@@ -781,6 +804,10 @@ def fetch_logos(client: Espn, team_ids, log=print) -> Dict[int, str]:
         url = team.get("logo") or (logos[0].get("href") if logos else None)
         if url:
             urls[int(team["id"])] = url
+    # The team list can leave a club's badge empty (Al Faisaly's is null)
+    # while every match listing it appears in still carries one.
+    for tid, url in (fallback or {}).items():
+        urls.setdefault(tid, url)
 
     wanted = set(team_ids)
     out: Dict[int, str] = {}

@@ -139,6 +139,28 @@ class TestEventParsing(unittest.TestCase):
         self.assertTrue(match.played)
         self.assertEqual(stats, [])
 
+    def test_an_all_zero_box_score_is_treated_as_missing(self):
+        """ESPN's placeholder for a match it did not cover: 0% possession for
+        both sides. Kept, it made a promoted club look like one that neither
+        took nor conceded shots."""
+        blank = json.loads(json.dumps(EVENT))
+        for c in blank["competitions"][0]["competitors"]:
+            for item in c["statistics"]:
+                item["displayValue"] = "0"
+        match, stats = E.parse_event(blank)
+        self.assertTrue(match.played)
+        self.assertEqual(stats, [])
+
+    def test_a_real_zero_is_kept(self):
+        """A side can fail to manage a shot; that is data, not a gap."""
+        shut_out = json.loads(json.dumps(EVENT))
+        for item in shut_out["competitions"][0]["competitors"][1]["statistics"]:
+            if item["name"] in ("totalShots", "shotsOnTarget"):
+                item["displayValue"] = "0"
+        _, stats = E.parse_event(shut_out)
+        away = next(s for s in stats if s.team_id == 7712)
+        self.assertEqual((away.shots, away.possession), (0.0, 37.5))
+
     def test_unknown_stat_names_are_ignored(self):
         odd = json.loads(json.dumps(EVENT))
         odd["competitions"][0]["competitors"][0]["statistics"].append(
@@ -299,6 +321,33 @@ class TestBadges(unittest.TestCase):
         ds = E.fetch_dataset(Boom(), seasons=[2026], log=lambda *a: None)
         self.assertTrue(ds.matches)
         self.assertEqual(ds.logos, {})
+
+    def test_badges_are_read_off_the_match_listings(self):
+        listed = json.loads(json.dumps(EVENT))
+        listed["competitions"][0]["competitors"][0]["team"]["logo"] = (
+            "https://a.espncdn.com/i/teamlogos/soccer/500/17755.png")
+        self.assertEqual(E.event_badges(listed),
+                         {17755: "https://a.espncdn.com/i/teamlogos/soccer/500/17755.png"})
+        self.assertEqual(E.event_badges({}), {})
+        self.assertEqual(E.event_badges({"competitions": "junk"}), {})
+
+    def test_a_badge_the_team_list_lacks_comes_from_the_listings(self):
+        """ESPN's team list has a null badge for Al Faisaly, so the page drew
+        initials for a club whose every fixture carries a badge URL."""
+        with tempfile.TemporaryDirectory() as d:
+            class Client:
+                cache_dir, timeout = Path(d), 5
+
+                def teams(self):
+                    return {"sports": [{"leagues": [{"teams": [
+                        {"team": {"id": "21446", "logo": None, "logos": None}}]}]}]}
+            (Path(d) / "logos").mkdir()
+            (Path(d) / "logos" / "21446.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            got = E.fetch_logos(Client(), {21446}, log=lambda *a: None)
+            self.assertEqual(got, {})
+            got = E.fetch_logos(Client(), {21446}, log=lambda *a: None,
+                                fallback={21446: "https://example.invalid/21446.png"})
+            self.assertTrue(got[21446].startswith("data:image/png;base64,"))
 
     def test_badges_can_be_switched_off(self):
         ds = E.fetch_dataset(TestFetchPipeline.Stub(), seasons=[2026],

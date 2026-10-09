@@ -457,6 +457,14 @@ class TestPredictorEndToEnd(unittest.TestCase):
                        "Availability", "Head to head", "Home advantage"):
             self.assertIn(needle, text)
         self.assertIn("vs", render_compact(pred))
+        self.assertNotIn("not a scheduled fixture", text)
+
+    def test_an_unscheduled_pairing_is_not_given_a_kickoff_time(self):
+        """It printed "now + 3 days" as if it were the time of a real match."""
+        ids = sorted(DS.teams)
+        text = render(self.predictor.predict(ids[0], ids[1]))
+        self.assertIn("not a scheduled fixture", text)
+        self.assertNotIn(" UTC", text.splitlines()[2])
 
     def test_json_shape(self):
         from spl.cli import _as_dict
