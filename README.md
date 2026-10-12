@@ -245,7 +245,7 @@ ratings can otherwise memorise results. It reports log loss, RPS, Brier, accurac
 goal/shot/possession error and a calibration table, against a league base-rate
 baseline. Run it on your own snapshot before trusting any number here.
 
-`.venv/bin/python -m unittest discover -s tests -t .` runs 312 tests. Most assert
+`.venv/bin/python -m unittest discover -s tests -t .` runs the test suite. Most assert
 recovery: a league is simulated from known parameters and the fit has to find them
 back (home advantage recovers to within 0.006 of truth averaged over seeds, attack
 ratings correlate ~0.93).

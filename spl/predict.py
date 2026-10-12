@@ -42,6 +42,8 @@ class Prediction:
     plan_limited: bool = False
     #: True when no live injury list was retrievable
     injuries_available: bool = True
+    #: when the snapshot was downloaded, if known - what a refresh would change
+    fetched_at: Optional[datetime] = None
 
     @property
     def staleness_days(self) -> Optional[float]:
@@ -50,6 +52,14 @@ class Prediction:
             return None
         ref = self.as_of or datetime.now(timezone.utc)
         return max(0.0, (ref - self.data_as_of).total_seconds() / 86400.0)
+
+    @property
+    def fetch_age_days(self) -> Optional[float]:
+        """How long ago the snapshot was downloaded, if known."""
+        if self.fetched_at is None:
+            return None
+        ref = self.as_of or datetime.now(timezone.utc)
+        return (ref - self.fetched_at).total_seconds() / 86400.0
 
     @property
     def horizon_days(self) -> Optional[float]:
@@ -82,9 +92,9 @@ class Prediction:
         """
         stale = self.staleness_days
         if stale is not None and stale > 180:
-            return "low - data is %.0f months old" % (stale / 30.0)
+            return "low - newest match is %.0f months old" % (stale / 30.0)
         if stale is not None and stale > 45:
-            return "low - data is %.0f days old" % stale
+            return "low - newest match is %.0f days old" % stale
 
         horizon = self.horizon_days
         n_home = self.features.form_home.matches
@@ -146,6 +156,7 @@ class Predictor:
             as_of=self.as_of,
             plan_limited=self.ds.plan_limited,
             injuries_available=bool(self.ds.injuries),
+            fetched_at=_parse_fetched(self.ds.fetched_at),
             home_id=home_id, away_id=away_id,
             home_name=self.ds.teams.get(home_id, str(home_id)),
             away_name=self.ds.teams.get(away_id, str(away_id)),
@@ -190,15 +201,39 @@ class Predictor:
 
 
 # --------------------------------------------------------------------- rendering
+#: a snapshot downloaded this recently is current: if its newest match is
+#: still old, the league has not been playing, and a refresh will not help
+RECENT_FETCH_DAYS = 3
+
+
+def _parse_fetched(text) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return None                     # e.g. a hand-built dataset's "now"
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def _data_warnings(pred: Prediction) -> List[str]:
     """Anything that makes the numbers below less trustworthy than they look."""
     out: List[str] = []
     stale = pred.staleness_days
     if stale is not None and stale > 45:
-        out.append("The newest match in the model is %s, %.0f days ago. Squads and"
-                   % (pred.data_as_of.strftime("%d %b %Y"), stale))
-        out.append("form have moved on since, and a refresh would fix that. These")
-        out.append("are NOT current-form predictions.")
+        fetch_age = pred.fetch_age_days
+        if fetch_age is not None and fetch_age <= RECENT_FETCH_DAYS:
+            # The snapshot is current: the league has simply not played - the
+            # summer between seasons, or a long winter break. Advising a
+            # refresh here sends the reader round in circles.
+            out.append("No league match has been played since %s, %.0f days ago - a"
+                       % (pred.data_as_of.strftime("%d %b %Y"), stale))
+            out.append("break in the season. The ratings still describe the squads as")
+            out.append("they were then, so transfers and form since are not reflected.")
+            out.append("Fetching again will not change that until matches are played.")
+        else:
+            out.append("The newest match in the model is %s, %.0f days ago. Squads and"
+                       % (pred.data_as_of.strftime("%d %b %Y"), stale))
+            out.append("form have moved on since, and a refresh would fix that. These")
+            out.append("are NOT current-form predictions.")
     horizon = pred.horizon_days
     if horizon is not None and horizon > 45:
         out.append("This fixture is %.0f days away. The data behind it is current,"

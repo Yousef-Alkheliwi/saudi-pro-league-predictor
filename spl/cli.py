@@ -230,10 +230,15 @@ def _line_label(index: int, n_rows: int, row: int) -> str:
 def compact_lineups(ds: Dataset, pred) -> str:
     """Both predicted XIs, a line each, for the end of a match report."""
     from .squad import predict_lineup
-    out = ["", "LIKELY XIs  (manager's preferences and recent form, fitted on past"
-           " line-ups - names 8.8 of 11 starters right)"]
-    for tid in (pred.home_id, pred.away_id):
-        lineup = predict_lineup(ds, tid, pred.kickoff)
+    lineups = [(tid, predict_lineup(ds, tid, pred.kickoff))
+               for tid in (pred.home_id, pred.away_id)]
+    # Say how the XIs were actually picked, and leave the accuracy to
+    # `lineup --evaluate`: a figure typed in here goes stale as data arrives.
+    modelled = any(lu is not None and lu.method == "model" for _, lu in lineups)
+    out = ["", "LIKELY XIs  (%s - `spl lineup --evaluate` measures the accuracy)"
+           % ("manager's preferences and recent form, fitted on past line-ups"
+              if modelled else "last week's XI, less known absences")]
+    for tid, lineup in lineups:
         if lineup is None:
             continue
         names = "; ".join(", ".join(p.short_name for p in row) for row in lineup.rows)

@@ -526,7 +526,7 @@ class TestDataVintageHonesty(unittest.TestCase):
     """Stale ratings must be labelled as such, loudly."""
 
     def _pred(self, stale_days=3, horizon_days=5, plan_limited=False,
-              injuries=True):
+              injuries=True, fetched_days_ago=None):
         ds = Dataset(league_id=307, fetched_at="now", teams=dict(DS.teams),
                      matches=list(DS.matches),
                      stats=list(DS.stats), players=list(DS.players),
@@ -534,6 +534,8 @@ class TestDataVintageHonesty(unittest.TestCase):
         ds.plan_limited = plan_limited
         newest = ds.played_matches[-1].dt
         now = newest + timedelta(days=stale_days)
+        if fetched_days_ago is not None:
+            ds.fetched_at = (now - timedelta(days=fetched_days_ago)).isoformat()
         p = Predictor(ds, as_of=now)
         return p.predict(sorted(ds.teams)[0], sorted(ds.teams)[1],
                          kickoff=now + timedelta(days=horizon_days))
@@ -543,6 +545,22 @@ class TestDataVintageHonesty(unittest.TestCase):
         pred = self._pred(stale_days=3, horizon_days=5)
         self.assertEqual(_data_warnings(pred), [])
         self.assertNotIn("READ THIS FIRST", render(pred))
+
+    def test_a_break_in_the_season_is_not_blamed_on_the_snapshot(self):
+        """Fetched an hour ago, newest match two months back: the league has
+        not played. "A refresh would fix that" sent the reader round in circles
+        through every summer."""
+        from spl.predict import _data_warnings
+        pred = self._pred(stale_days=60, horizon_days=5, fetched_days_ago=0.05)
+        text = " ".join(_data_warnings(pred))
+        self.assertIn("No league match has been played", text)
+        self.assertNotIn("a refresh would fix that", text)
+        self.assertIn("old", pred.confidence())         # still a weaker forecast
+
+    def test_an_old_snapshot_still_asks_for_a_refresh(self):
+        from spl.predict import _data_warnings
+        pred = self._pred(stale_days=60, horizon_days=5, fetched_days_ago=59)
+        self.assertIn("a refresh would fix that", " ".join(_data_warnings(pred)))
 
     def test_old_data_warns_and_downgrades_confidence(self):
         from spl.predict import _data_warnings
